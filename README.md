@@ -7,9 +7,13 @@ A tool for converting The Talos Principle: Reawakened `.level` & `.episode` file
 > https://discord.com/channels/464411560563965953/1315739667202834484/1359821476093624383
 
 ## Usage
+
+For Windows users, drag & drop `.level/.episode/.json` file onto `rocket-tweaker.bat` (python must be installed)
+
+Alternatively, run it from the command line:
 ```
 $ python3 rocket-tweaker.py -h
-usage: rocket-tweaker.py [-h] [-o OUTPUT] [-e] [--use_lengths] input_file
+usage: rocket-tweaker.py [-h] [-o OUTPUT] [-e] [--force_lengths] input_file
 
 A tool for converting The Talos Principle: Reawakened `.level` & `.episode` files used in custom campaigns to and from JSON for easier editing. Lets you dump a file to .json for manual editing, or create a .level/.episode from .json. Will save a backup when trying to overwrite a file
 
@@ -21,5 +25,5 @@ optional arguments:
   -o OUTPUT, --output OUTPUT
                         /path/to/output
   -e, --episode         If set, will use the `.episode` extenstion for output file
-  --use_lengths         If set, will use the data lengths found in the JSON. Otherwise, will ignore data lengths and calculate them dynamically
+  --force_lengths       If set, will use the data lengths found in the JSON. Otherwise, will ignore data lengths can calculate them dynamically
 ```
