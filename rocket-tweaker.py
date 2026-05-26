@@ -3,7 +3,7 @@
 """
 Author: Rocket (Discord: @roqucet)
 Created: 2026-01-27
-Version: v0.1.0
+Version: v0.1.1
 Description: Gives more freedom for editing TTP:R .level/.episode files.
     Lets you dump a file to .json for manual editing, or create a .level/.episode from .json.
     Will save a backup when trying to overwrite a file
@@ -20,7 +20,9 @@ from datetime import datetime
 import base64
 import io
 
-USE_LENGTHS = False 
+from enum import auto, Enum, IntEnum
+
+FORCE_LENGTHS = False 
 CACHED_STRINGS = list()
 SOFT_OBJECT_CACHED_STRINGS = list()
 
@@ -47,6 +49,7 @@ class BinaryReader(object):
         return self.stream.read(size)
 
     def read_string(self):
+        print(f"String @: {self.stream.tell()}")
         string_length = self.read_s32()
 
         # Unicode is identifed as a negative length
@@ -116,15 +119,18 @@ class CommonHeader(object):
             if has_guid != 0:
                 guid = reader.read_data(16)
 
-        return {
-            "strings": strings,
-            "bytes": bytes_to_read,
-        }
+        ret = dict()
+        if strings:
+            ret.update({"strings": strings,})
+        ret.update({"bytes": bytes_to_read,})
+
+        return ret
 
     def unparse(writer, header, replace_byte_count=-1, optional_guid=True):
-        for string in header["strings"]:
-            writer.write_u32(1)
-            writer.write_string(string)
+        if "strings" in header:
+            for string in header["strings"]:
+                writer.write_u32(1)
+                writer.write_string(string)
         writer.write_data(b'\x00' * 4)
         if replace_byte_count != -1:
             writer.write_u32(replace_byte_count)
@@ -159,12 +165,18 @@ class ObjectProperty(object):
             # Calculate bytes dynamically
             current_pos = writer.stream.tell()
             writer.stream.seek(header_pos, os.SEEK_SET)
-            if USE_LENGTHS:
+            if FORCE_LENGTHS:
                 CommonHeader.unparse(writer, header)
             else:
                 byte_count = current_pos - byte_count_start
                 CommonHeader.unparse(writer, header, replace_byte_count=byte_count)
             writer.stream.seek(current_pos, os.SEEK_SET)
+
+class SoftObjectUserContentTypes(IntEnum):
+    Unknown         = -1
+    CachedDatabase  = 0x06
+    DirectPath      = 0x07
+    Database        = 0x09
 
 class SoftObjectProperty(object):
     def parse(reader, include_header=True):
@@ -174,39 +186,36 @@ class SoftObjectProperty(object):
             header = CommonHeader.parse(reader)
             ret.update({"header": header})
         
-        special = reader.read_u8()
-        if special == 0x09:     # Mesh reference
-            object_path = reader.read_string()
-            object_index = reader.read_s32()
-            cache_index = len(SOFT_OBJECT_CACHED_STRINGS)
-            SOFT_OBJECT_CACHED_STRINGS.append(object_path)
-            object_name = ""
-        elif special == 0x07:   # Collision reference
+        obj = dict()
+        user_content_type = SoftObjectUserContentTypes(reader.read_u8())
+        obj.update({"user_content_type": user_content_type,})
+        if user_content_type == SoftObjectUserContentTypes.Database:
+            database_path = reader.read_string()
+            asset_index = reader.read_s32()
+            SOFT_OBJECT_CACHED_STRINGS.append(database_path)
+            obj.update({
+                    "database_path": database_path,
+                    "asset_index": asset_index,
+                })
+        elif user_content_type == SoftObjectUserContentTypes.DirectPath:
             # Unsure if it is cached
-            object_path = reader.read_string()
-            object_name = reader.read_string()
-            reader.read_data(4)     # Unknown
-            cache_index = -1
-            object_index = -1
-        elif special == 0x06:   # Cached Mesh reference
-            cache_index = reader.read_s32()
-            object_path = SOFT_OBJECT_CACHED_STRINGS[cache_index]
-            object_index = reader.read_s32()
-            object_name = ""
+            package_path = reader.read_string()
+            asset_name = reader.read_string()
+            subobject = reader.read_string()
+            obj.update({
+                    "package_path": package_path,
+                    "asset_name": asset_name,
+                    "subobject": subobject,
+                })
+        elif user_content_type == SoftObjectUserContentTypes.CachedDatabase:
+            database_cache_index = reader.read_s32()
+            asset_index = reader.read_s32()
+            obj.update({
+                    "database_cache_index": database_cache_index,
+                    "asset_index": asset_index,
+                })
         else:
-            print(f"Unimplemented soft object special: {special:#2x}")
-            object_path = "Unimplemented path type"
-            object_name = "Unimplemented path type"
-            object_index = -1
-            cache_index = -1
-
-        obj = {
-            "special": special,
-            "cache_index": cache_index,
-            "object_path": object_path,
-            "object_name": object_name,
-            "object_index": object_index,
-        }
+            print(f"Unimplemented soft object user_content_type: {user_content_type}")
 
         ret.update({"soft_object": obj,})
         return ret
@@ -219,30 +228,32 @@ class SoftObjectProperty(object):
 
         obj = data["soft_object"]
 
-        special = obj["special"]
-        object_path = obj["object_path"]
-        object_name = obj["object_name"]
-        object_index = obj["object_index"]
-        cache_index = obj["cache_index"]
-
-        writer.write_u8(special)
-        if special == 0x09:     # Mesh reference
-            writer.write_string(object_path)
-            writer.write_s32(object_index)
-        elif special == 0x07:   # Editor Collision reference
-            writer.write_string(object_path)
-            writer.write_string(object_name)
-            writer.write_data(b'\x00' * 4)
-        elif special == 0x06:   # Cached Mesh reference
-            writer.write_s32(cache_index)
-            writer.write_s32(object_index)
+        user_content_type = SoftObjectUserContentTypes(obj["user_content_type"])
+        writer.write_u8(user_content_type)
+        if user_content_type == SoftObjectUserContentTypes.Database:
+            database_path = obj["database_path"]
+            asset_index = obj["asset_index"]
+            writer.write_string(database_path)
+            writer.write_s32(asset_index)
+        elif user_content_type == SoftObjectUserContentTypes.DirectPath:
+            package_path = obj["package_path"]
+            asset_name = obj["asset_name"]
+            subobject = obj["subobject"]
+            writer.write_string(package_path)
+            writer.write_string(asset_name)
+            writer.write_string(subobject)
+        elif user_content_type == SoftObjectUserContentTypes.CachedDatabase:
+            database_cache_index = obj["database_cache_index"]
+            asset_index = obj["asset_index"]
+            writer.write_s32(database_cache_index)
+            writer.write_s32(asset_index)
 
         if include_header:
             header = data["header"]
             # Calculate bytes dynamically
             current_pos = writer.stream.tell()
             writer.stream.seek(header_pos, os.SEEK_SET)
-            if USE_LENGTHS:
+            if FORCE_LENGTHS:
                 CommonHeader.unparse(writer, header)
             else:
                 byte_count = current_pos - byte_count_start
@@ -307,7 +318,7 @@ class ArrayProperty(object):
         element_type = data["type"]
         include_type_header = data["include_type_header"]
         header_data = data["header_data"]
-        if USE_LENGTHS:
+        if FORCE_LENGTHS:
             length = data["length"]
         else:
             if element_type == "ByteProperty":
@@ -357,7 +368,7 @@ class ArrayProperty(object):
         # Hacky fix for data length
         current_pos = writer.stream.tell()
         writer.stream.seek(byte_count_pos, os.SEEK_SET)
-        if USE_LENGTHS:
+        if FORCE_LENGTHS:
             writer.write_u32(data["bytes"])
         else:
             byte_count = current_pos - byte_count_start
@@ -443,7 +454,7 @@ class MapProperty(object):
         include_value_header = data["include_value_header"]
         value_header_data = data["value_header_data"]
         
-        if USE_LENGTHS:
+        if FORCE_LENGTHS:
             count = data["count"]
         else:
             count = len(data["map data"])
@@ -502,7 +513,7 @@ class MapProperty(object):
         # Hacky fix for data length
         current_pos = writer.stream.tell()
         writer.stream.seek(byte_count_pos, os.SEEK_SET)
-        if USE_LENGTHS:
+        if FORCE_LENGTHS:
             writer.write_u32(data["bytes"])
         else:
             byte_count = current_pos - byte_count_start
@@ -536,7 +547,7 @@ class StrProperty(object):
             # Calculate bytes dynamically
             current_pos = writer.stream.tell()
             writer.stream.seek(header_pos, os.SEEK_SET)
-            if USE_LENGTHS:
+            if FORCE_LENGTHS:
                 CommonHeader.unparse(writer, header)
             else:
                 byte_count = current_pos - byte_count_start
@@ -593,7 +604,7 @@ class TextProperty(object):
             # Calculate bytes dynamically
             current_pos = writer.stream.tell()
             writer.stream.seek(header_pos, os.SEEK_SET)
-            if USE_LENGTHS:
+            if FORCE_LENGTHS:
                 CommonHeader.unparse(writer, header)
             else:
                 byte_count = current_pos - byte_count_start
@@ -701,7 +712,7 @@ class ByteProperty(object):
             header = data["header"]
             current_pos = writer.stream.tell()
             writer.stream.seek(header_pos, os.SEEK_SET)
-            if USE_LENGTHS:
+            if FORCE_LENGTHS:
                 CommonHeader.unparse(writer, header)
             else:
                 byte_count = current_pos - byte_count_start
@@ -1035,7 +1046,7 @@ class StructProperty(object):
         if include_header:
             current_pos = writer.stream.tell()
             writer.stream.seek(byte_count_pos, os.SEEK_SET)
-            if USE_LENGTHS:
+            if FORCE_LENGTHS:
                 writer.write_u32(data["bytes"])
             else:
                 byte_count = current_pos - byte_count_start
@@ -1057,62 +1068,66 @@ class StructProperty(object):
             writer.write_string(uuid)
         writer.write_data(b'\x00' * 4)
 
+class ObjectUserContentTypes(IntEnum):
+    Unknown         = -1
+    TargetActor     = 0x03
+    CachedPath      = 0x04
+    AssetPath       = 0x07
+    UncachedPath    = 0x08
+
 class ScriptObject(object):
     def parse(reader):
         global CACHED_STRINGS
+
+        ret = dict()
         special = reader.read_u8()
+        ret.update({"special": special,})
         if special == 0:
             # Object ends
-            return {"special": special,}
+            return ret
         if special == 0x02:
-            user_content_type = reader.read_u8()
+            user_content_type = ObjectUserContentTypes(reader.read_u8())
         else:
-            user_content_type = special
-       
-        if user_content_type == 0x08:   # Uncached string
+            user_content_type = ObjectUserContentTypes(special)
+
+        ret.update({"user_content_type": user_content_type,})
+        if user_content_type == ObjectUserContentTypes.UncachedPath:
             object_path = reader.read_string()
-            cache_index = len(CACHED_STRINGS)
             CACHED_STRINGS.append(object_path)
-        elif user_content_type == 0x07:   # Asset path
-            # TODO: Unsure if this gets cached (or even uses the same cache)
-            object_path = reader.read_string()
-            cache_index = -1
-        elif user_content_type == 0x04:  # Cached string
+            ret.update({"object_path": object_path,})
+        elif user_content_type == ObjectUserContentTypes.AssetPath:
+            # TODO: Unsure if this gets cached
+            asset_path = reader.read_string()
+            ret.update({"asset_path": asset_path,})
+        elif user_content_type == ObjectUserContentTypes.CachedPath:
             cache_index = reader.read_u32()
-            object_path = CACHED_STRINGS[cache_index]
-        elif user_content_type == 0x03:  # When targeting another actor. I assume the following u32 is the actor index
-            object_path = "Target Actor Index"
-            cache_index = reader.read_u32()     # use cache_index to avoid adding new elements
+            ret.update({"cache_index": cache_index,})
+        elif user_content_type == ObjectUserContentTypes.TargetActor:
+            target_actor_index = reader.read_u32()
+            ret.update({"target_actor_index": target_actor_index,})
         else:
             print(f"Unimplemented user content type: {user_content_type:#2x}")
-            object_path = "Unimplemented path type"
 
         # Extra padding sometimes, noticed it's the case when `special` == 0x2
         if special == 0x2:
             reader.read_data(1)
 
         # Guessing this determines if there are named properties
-        named_properties = list()
         if special == 0x02:
+            named_properties = list()
             while True:
                 prop = NamedProperty.parse(reader)
                 if prop == None:
                     break
                 named_properties.append(prop)
+            ret.update({"named_properties": named_properties,})
         elif special == 0x08 or special == 0x07 or special == 0x03 or special == 0x4:
             # No named properties
             pass
         else:
             print(f"Unknown special value: {special:#2x}")
 
-
-        return {
-            "special": special,
-            "user_content_type": user_content_type,
-            "cache_index": cache_index,
-            "object_path": object_path,
-            "named_properties": named_properties,
-        }
+        return ret
 
     def unparse(writer, data):
         special = data["special"]
@@ -1122,27 +1137,28 @@ class ScriptObject(object):
             return
 
         user_content_type = data["user_content_type"]
-        cache_index = data["cache_index"]
-        object_path = data["object_path"]
-        named_properties = data["named_properties"]
-
-        # Extra padding sometimes, noticed it's the case when `special` == 0x2
         if special == 0x02:
             writer.write_u8(user_content_type)
 
-        if user_content_type == 0x08:
+        if user_content_type == ObjectUserContentTypes.UncachedPath:
+            object_path = data["object_path"]
             writer.write_string(object_path)
-        elif user_content_type == 0x07:
-            writer.write_string(object_path)
-        elif user_content_type == 0x04:
+        elif user_content_type == ObjectUserContentTypes.AssetPath:
+            asset_path = data["asset_path"]
+            writer.write_string(asset_path)
+        elif user_content_type == ObjectUserContentTypes.CachedPath:
+            cache_index = data["cache_index"]
             writer.write_u32(cache_index)
-        elif user_content_type == 0x03:
-            writer.write_u32(cache_index)
+        elif user_content_type == ObjectUserContentTypes.TargetActor:
+            target_actor_index = data["target_actor_index"]
+            writer.write_u32(target_actor_index)
 
+        # Extra padding sometimes, noticed it's the case when `special` == 0x2
         if special == 0x02:
             writer.write_data(b'\x00')
         
         if special == 0x02:
+            named_properties = data["named_properties"]
             for prop in named_properties:
                 NamedProperty.unparse(writer, prop)
             # Write the `None` property
@@ -1258,7 +1274,7 @@ def main():
     parser.add_argument("input_file", help="/path/to/input. File extension determins conversion type - `.episode/.level` -> `.json` | `.json` -> `.level`")
     parser.add_argument("-o", "--output", help="/path/to/output")
     parser.add_argument("-e", "--episode", action="store_true", help="If set, will use the `.episode` extenstion for output file")
-    parser.add_argument("--use_lengths", action="store_true", help="If set, will use the data lengths found in the JSON. Otherwise, will ignore data lengths can calculate them dynamically")
+    parser.add_argument("--force_lengths", action="store_true", help="If set, will use the data lengths found in the JSON. Otherwise, will ignore data lengths can calculate them dynamically")
 
     # .level & .episode files are largely handled by Unreal Engine, with each script/object having a `Serialize` function.
     # This results in a file format similar to unreal games saves (GVAS). Its possible those tool can read/edit .episode & .level files
@@ -1271,9 +1287,9 @@ def main():
     output_path = args.output
     use_episode_extension = args.episode
 
-    global USE_LENGTHS
-    if args.use_lengths:
-        USE_LENGTHS = args.use_lengths
+    global FORCE_LENGTHS
+    if args.force_lengths:
+        FORCE_LENGTHS = args.force_lengths
         print("Warning: There is no sanity checking on byte lengths & element counts. Make sure to have updated all fields correctly")
 
     # If a directory is targeted, default to converting the .episode file inside
