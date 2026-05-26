@@ -49,7 +49,6 @@ class BinaryReader(object):
         return self.stream.read(size)
 
     def read_string(self):
-        print(f"String @: {self.stream.tell()}")
         string_length = self.read_s32()
 
         # Unicode is identifed as a negative length
