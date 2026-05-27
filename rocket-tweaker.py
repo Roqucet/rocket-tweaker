@@ -22,7 +22,8 @@ import io
 
 from enum import auto, Enum, IntEnum
 
-FORCE_LENGTHS = False 
+FORCE_LENGTHS = False
+OPTIONAL_TYPES = False
 CACHED_STRINGS = list()
 SOFT_OBJECT_CACHED_STRINGS = list()
 
@@ -1234,6 +1235,59 @@ class Episode(object):
     def dump(self):
         print(json.dumps(self.episode, indent=2))
 
+    def dump_actors(self, dump_path):
+        # Episode[0]
+        #  -> named_properties 
+        #    [find] name: "Scene"
+        #      -> data 
+        #        -> object
+        #          -> named_properties
+        #            [find] name: "Actors"
+        #              -> data
+        #                -> elements
+        #                  [for all]
+        #                    -> named_properties
+        #                      [find] name: "ActorDisplayName"
+        #                        -> data
+        #                          -> string
+        #                      [find] name: "ActorClass"
+        #                        -> data
+        #                          -> object
+        #                            user_content_type trickery
+        #                            -> object_path
+        name_and_types = []
+        for e in self.episode["episode"][0]["named_properties"]:
+            if e["name"] != "Scene":
+                continue
+            for e2 in e["data"]["object"]["named_properties"]:
+                if e2["name"] != "Actors":
+                    continue
+                for actor in e2["data"]["elements"]:
+                    name = ""
+                    type_ = ""
+                    for prop in actor["named_properties"]:
+                        if prop["name"] == "ActorDisplayName":
+                            name = prop["data"]["string"]
+                        if prop["name"] == "ActorClass":
+                            obj = prop["data"]["object"]
+                            if obj["user_content_type"] == ObjectUserContentTypes.UncachedPath:
+                                type_ = obj["object_path"]
+                            elif obj["user_content_type"] == ObjectUserContentTypes.CachedPath:
+                                type_ = CACHED_STRINGS[obj["cache_index"]]
+                            elif obj["user_content_type"] == ObjectUserContentTypes.AssetPath:
+                                type_ = obj["asset_path"]
+                            else:
+                                type_ = "Unknown type"
+                    name_and_types.append((name, type_))
+        global OPTIONAL_TYPES
+        with open(dump_path, "wb") as f:
+            for name, type_ in name_and_types:
+                if OPTIONAL_TYPES:
+                    timmed_type = type_.split(".")[0].split("/")[-1]
+                    f.write(f"{timmed_type} | {name}\n".encode())
+                else:
+                    f.write(f"{name}\n".encode())
+
 # List of classes that I have tested with array
 # New classes may have issues with headers
 TESTED_ARRAY_CLASSES = [
@@ -1274,6 +1328,8 @@ def main():
     parser.add_argument("-o", "--output", help="/path/to/output")
     parser.add_argument("-e", "--episode", action="store_true", help="If set, will use the `.episode` extenstion for output file")
     parser.add_argument("--force_lengths", action="store_true", help="If set, will use the data lengths found in the JSON. Otherwise, will ignore data lengths can calculate them dynamically")
+    parser.add_argument("-d", "--dump-actors", action="store_true", help="Will instead write actors & blueprints to output file")
+    parser.add_argument("--optional-types", action="store_true", help="Will instead write actors & blueprints to output file")
 
     # .level & .episode files are largely handled by Unreal Engine, with each script/object having a `Serialize` function.
     # This results in a file format similar to unreal games saves (GVAS). Its possible those tool can read/edit .episode & .level files
@@ -1290,6 +1346,9 @@ def main():
     if args.force_lengths:
         FORCE_LENGTHS = args.force_lengths
         print("Warning: There is no sanity checking on byte lengths & element counts. Make sure to have updated all fields correctly")
+    global OPTIONAL_TYPES
+    if args.optional_types:
+        OPTIONAL_TYPES = args.optional_types
 
     # If a directory is targeted, default to converting the .episode file inside
     if os.path.isdir(input_path):
@@ -1307,6 +1366,8 @@ def main():
             output_path = root + ".level"
 
     convert_type = "from_json" if input_path.endswith(".json") else "to_json"
+    if args.dump_actors:
+        convert_type = "json_dump_actors" if input_path.endswith(".json") else "level_dump_actors"
 
     # If reading from writing to JSON, verify the input file exists
     if convert_type == "to_json":
@@ -1343,6 +1404,12 @@ def main():
     elif convert_type == "to_json":
         e.from_episode(input_path)
         e.to_json(output_path)
+    elif convert_type == "json_dump_actors":
+        # Json doesn't populate the string cache which is required to get types
+        print("Actor dump does not work with .json files")
+    elif convert_type == "level_dump_actors":
+        e.from_episode(input_path)
+        e.dump_actors(output_path)
 
 
 if __name__ == "__main__":
