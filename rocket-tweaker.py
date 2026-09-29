@@ -102,30 +102,36 @@ class BinaryWriter(object):
 class BaseObject(ABC):
     @abstractmethod
     def __init__(self):
-        pass
+        raise NotImplementedError
 
-    """Common function to print object data"""
     def __repr__(self):
+        """Common function to print object data"""
         ret = []
-        for k, v in self.to_dict().items():
+        for k, v in self.__dict__.items():
             ret.append(f"{k}: {v}")
-        return ", ".join(ret)
+        return "<" + ", ".join(ret) + ">"
 
-    """Create an object from a level file byte stream"""
     @classmethod
     @abstractmethod
     def from_level(cls, reader):
-        return NotImplemented
+        """Create an object from a level file byte stream"""
+        raise NotImplementedError
 
-    """Convert object to a dictionary for serialization"""
     @abstractmethod
     def to_dict(self):
-        return NotImplemented
+        """Convert object to a dictionary for serialization"""
+        raise NotImplementedError
 
-    """Write an object to a level file byte stream"""
+    @classmethod
+    @abstractmethod
+    def from_dict(cls, dictionary):
+        """Create an object from a deserialized dictionary"""
+        raise NotImplementedError
+
     @abstractmethod
     def to_level(self, writer, header):
-        return NotImplemented
+        """Write an object to a level file byte stream"""
+        raise NotImplementedError
 
 class CommonHeader(BaseObject):
     def __init__(self, strings, property_length, guid):
@@ -158,11 +164,23 @@ class CommonHeader(BaseObject):
         if self.strings:
             ret.update({"strings" : self.strings})
         # TODO: Calculate property length dynamically?
-        if self.property_length:
-            ret.update({"property_length" : self.property_length})
+        # TODO: Is this needed?? Shouldn't need to be edited as it should be calculated dynamically
+        # when converting to a .level
+        ret.update({"property_length" : self.property_length})
         if self.guid:
             ret.update({"guid" : self.guid})
         return ret
+
+    @classmethod
+    def from_dict(cls, dictionary):
+        strings = []
+        if "strings" in dictionary:
+            strings = dictionary["strings"]
+        property_length = dictionary["property_length"]
+        guid = None
+        if "guid" in dictionary:
+            guid = dictionary["guid"]
+        return cls(strings, property_length, guid)
 
     def to_level(self, writer, header, replace_byte_count = -1, optional_guid = True):
         for string in header["strings"]:
@@ -194,13 +212,28 @@ class ObjectProperty(BaseObject):
         ret = dict()
         if self.header:
             ret.update({"header" : self.header.to_dict()})
-        if self.object_:
-            try:    # TODO: remove try-except after rewrite
-                ret.update(self.object_.to_dict())
-            except AttributeError as e:
-                print(f"[!] Object Property: {e}")
-                ret.update({"obj" : self.object_})
+        # if self.object_:
+        try:    # TODO: remove try-except after rewrite
+            ret.update(self.object_.to_dict())
+        except AttributeError as e:
+            print(f"[!] Object Property: {e}")
+            ret.update({"obj" : self.object_})
+        print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+        print(ret)
+        print("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
         return ret
+
+    @classmethod
+    def from_dict(cls, dictionary):
+        print("#################################################")
+        print(dictionary)
+        header = None
+        if "header" in dictionary:
+            header = CommonHeader.from_dict(dictionary.pop("header"))
+        
+        object_ = ScriptObject.from_dict(dictionary)
+
+        return cls(header, object_)
 
     def to_level(writer, data, include_header=True, header_data=None):
         if include_header:
@@ -345,13 +378,13 @@ class ArrayProperty(BaseObject):
         length = reader.read_u32()
 
         elements = list()
-        if element_type == "ByteProperty":      # Hacky ByteProperty fix
+        if element_type == "ByteProperty":      # Hacky ByteProperty fix        # TODO: Fix after rewrite
             # Use the fallback, which works & is expected by NamedProperty to deserialize ActorProperties
             # -4 because bytes_to_read is the number of bytes from before the length field
             data = base64.b64encode(reader.read_data(bytes_to_read - 4))
             # elements.append({"data": data.decode()})
             elements.append(ArrayOfBytes(data.decode()))
-        elif element_type in property_string_to_class.keys():
+        elif element_type in property_string_to_class:
             element_class = property_string_to_class[element_type]
             if not element_class in TESTED_ARRAY_CLASSES:
                 print(f"Warning! Untested array element type \"{element_type}\". Potential for incorrect parsing / crash")
@@ -386,18 +419,13 @@ class ArrayProperty(BaseObject):
     
     def to_dict(self):
         ret = dict()
-        if self.unknown:
-            ret.update({"unknown" : self.unknown})
-        if self.element_type:
-            ret.update({"element_type" : self.element_type})
-        if self.include_type_header:
-            ret.update({"include_type_header" : self.include_type_header})
+        ret.update({"unknown" : self.unknown})
+        ret.update({"element_type" : self.element_type})
+        ret.update({"include_type_header" : self.include_type_header})
         if self.header_data:
             ret.update({"header_data" : self.header_data})
-        if self.byte_count:
-            ret.update({"byte_count" : self.byte_count})
-        if self.length:
-            ret.update({"length" : self.length})
+        ret.update({"byte_count" : self.byte_count})
+        ret.update({"length" : self.length})
         if self.elements:
             elements = list()
             for element in self.elements:
@@ -405,6 +433,47 @@ class ArrayProperty(BaseObject):
                 elements.append(element.to_dict())
             ret.update({"elements" : elements})
         return ret
+
+    @classmethod
+    def from_dict(cls, dictionary):
+        unknown = dictionary["unknown"]
+        element_type = dictionary["element_type"]
+        include_type_header = dictionary["include_type_header"]
+        header_data = None
+        if "header_data" in dictionary:
+            header_data = dictionary["header_data"]
+        byte_count = dictionary["byte_count"]
+        length = dictionary["length"]
+        elements = []
+        if "elements" in dictionary:
+            if element_type == "ByteProperty":      # Hacky ByteProperty fix        # TODO: Fix after rewrite
+                # Use the fallback, which works & is expected by NamedProperty to deserialize ActorProperties
+                # -4 because bytes_to_read is the number of bytes from before the length field
+                # data = base64.b64encode(reader.read_data(bytes_to_read - 4))
+                # elements.append({"data": data.decode()})
+                elements.append(ArrayOfBytes.from_dict(dictionary["elements"]))
+            elif element_type in property_string_to_class:
+                element_class = property_string_to_class[element_type]
+                if not element_class in TESTED_ARRAY_CLASSES:
+                    print(f"Warning! Untested array element type \"{element_type}\". Potential for incorrect parsing / crash")
+                for element in dictionary["elements"]:
+                    # Wish there was a nice way to do this without using a generic "data" value in the returned property dicts
+                    # Doing it this way removes unnecessary dictionaries from arrays
+                    # try:        # TODO: remove try after rewrite
+                    #     value = list(element_class.from_level(reader, include_header=False, header_data=header_data).values())
+                    #     assert len(value) == 1
+                    #     value = value[0]
+                    #     elements.append(value)
+                    # except AttributeError as e:
+                    #     print(f"[!] {e}")
+                    #     elements.append(element_class.from_level(reader, include_header=False, header_data=header_data))
+                    elements.append(element_class.from_dict(element))
+            else:
+                print(f"Unimplemented array property type!: \"{element_type}\"")
+                # -4 because bytes_to_read is the number of bytes from before the length field
+                data = base64.b64decode(dictionary["elements"].encode())
+                elements.append(data)
+        return cls(unknown, element_type, include_type_header, header_data, byte_count, length, elements)
 
     def to_level(writer, data):
         non_zero_unknown = data["non zero unknown"]
@@ -679,9 +748,16 @@ class StrProperty(BaseObject):
         ret = dict()
         if self.header:
             ret.update({"header" : self.header.to_dict()})
-        if self.string:
-            ret.update({"string" : self.string})
+        ret.update({"string" : self.string})
         return ret
+
+    @classmethod
+    def from_dict(cls, dictionary):
+        header = None
+        if "header" in dictionary:
+            header = CommonHeader.from_dict(dictionary["header"])
+        string = dictionary["string"]
+        return cls(header, string)
 
     def to_level(writer, data, include_header=True, header_data=None):
         if include_header:
@@ -996,9 +1072,10 @@ class EnumProperty(BaseObject):
         writer.write_data(b'\x00' * 4)
 
 class NamedProperty(BaseObject):
-    def __init__(self, name, property_):
+    def __init__(self, name, property_type, property_object):
         self.name = name
-        self.property_ = property_
+        self.property_type = property_type
+        self.property_object = property_object
 
     @classmethod
     def from_level(cls, reader):
@@ -1009,8 +1086,8 @@ class NamedProperty(BaseObject):
 
         property_type = reader.read_string()
 
-        if property_type in property_string_to_class.keys():
-            property_ = property_string_to_class[property_type].from_level(reader)
+        if property_type in property_string_to_class:
+            property_object = property_string_to_class[property_type].from_level(reader)
         elif name == "None":     # TODO: 4 bytes after "None" is a 0 length string
             pass
         else:
@@ -1022,6 +1099,7 @@ class NamedProperty(BaseObject):
                 "header": header,
                 "data": data,
             }
+            property_object = property_data     # TODO: Fix me
 
         # Hacky fix to parse the ActorProperties byte array. Needlessly specific (name is sufficient)
         # TODO: make this better later after rewrite
@@ -1046,18 +1124,63 @@ class NamedProperty(BaseObject):
                 CACHED_STRINGS = saved_cache.copy()
                 SOFT_OBJECT_CACHED_STRINGS = saved_soft_cache.copy()
 
-        return cls(name, property_)
+        return cls(name, property_type, property_object)
 
     def to_dict(self):
         ret = dict()
         assert self.name
-        if self.property_:
+        if self.property_object:
             try:    # TODO: remove try-except after rewrite
-                ret.update(self.property_.to_dict())
+                ret.update(self.property_object.to_dict())
             except AttributeError as e:
                 print(f"[!] Named Property {self.name}: {e}")
-                ret.update({"prop" : self.property_})
+                ret.update({"prop" : self.property_object})
+        assert "type" not in ret        # TODO: Make sure we aren't overwritting a value that already exists
+        ret.update({"type" : self.property_type})
         return {self.name : ret}
+
+    @classmethod
+    def from_dict(cls, name, data):
+        property_type = data.pop("type")
+        if property_type in property_string_to_class:
+            property_object = property_string_to_class[property_type].from_dict(data)
+        elif name == "None":     # TODO: 4 bytes after "None" is a 0 length string
+            pass
+        else:
+            print(f"Unimplemented named property type!: \"{property_type}\"")
+            # If type is unknown, assume it uses the common header
+            header = CommonHeader.from_dict(data["header"])
+            data2 = data["data"]
+            property_data = {
+                "header": header,
+                "data": data2,
+            }
+            property_object = property_data     # TODO: Fix me
+        
+        # Hacky fix to parse the ActorProperties byte array. Needlessly specific (name is sufficient)
+        # TODO: make this better later after rewrite
+        if False:
+            if name == "ActorProperties" and property_type == "ArrayProperty" and property_data["type"] == "ByteProperty":
+                # Replace the byte array base64 data with the parsed script objects
+                # Actor properties use a separate string cache (likely because Talos parses them after the main script)
+
+                # TODO: Hacky (& potentially slow) fix for separate string caches
+                global CACHED_STRINGS
+                global SOFT_OBJECT_CACHED_STRINGS
+                saved_cache = CACHED_STRINGS.copy()
+                saved_soft_cache = SOFT_OBJECT_CACHED_STRINGS.copy()
+                CACHED_STRINGS = list()
+                SOFT_OBJECT_CACHED_STRINGS = list()
+
+                actor_prop_bytes = base64.b64decode(property_data["elements"][0]["data"])
+                actor_prop = Episode()
+                actor_prop.from_in_memory(actor_prop_bytes)
+                property_data["elements"][0]["data"] = actor_prop.episode
+
+                CACHED_STRINGS = saved_cache.copy()
+                SOFT_OBJECT_CACHED_STRINGS = saved_soft_cache.copy()
+
+        return cls(name, property_type, property_object)
 
     def to_level(writer, data):
         name = data["name"]
@@ -1282,11 +1405,11 @@ class StructProperty(BaseObject):
         writer.write_data(b'\x00' * 4)
 
 class ScriptObject(BaseObject):
-    def __init__(self, special, user_content_type, cache_index, object_path, named_properties):
+    def __init__(self, special, user_content_type, object_path, cache_index, named_properties):
         self.special = special
         self.user_content_type = user_content_type
-        self.cache_index = cache_index
         self.object_path = object_path
+        self.cache_index = cache_index
         self.named_properties = named_properties
 
     @classmethod
@@ -1312,12 +1435,14 @@ class ScriptObject(BaseObject):
         elif user_content_type == 0x04:  # Cached string
             cache_index = reader.read_u32()
             object_path = CACHED_STRINGS[cache_index]
+            # object_path = ""        # TODO: Remove unneccisary/confusing element
         elif user_content_type == 0x03:  # When targeting another actor. I assume the following u32 is the actor index
             object_path = "Target Actor Index"
             cache_index = reader.read_u32()     # use cache_index to avoid adding new elements
         else:
             print(f"Unimplemented user content type: {user_content_type:#2x}")
             object_path = "Unimplemented path type"
+            cache_index = -1
 
         # Extra padding sometimes, noticed it's the case when `special` == 0x2
         if special == 0x2:
@@ -1337,7 +1462,7 @@ class ScriptObject(BaseObject):
         else:
             print(f"Unknown special value: {special:#2x}")
 
-        return cls(special, user_content_type, cache_index, object_path, named_properties)
+        return cls(special, user_content_type, object_path, cache_index, named_properties)
         # return {
         #     "special": special,
         #     "user_content_type": user_content_type,
@@ -1353,22 +1478,48 @@ class ScriptObject(BaseObject):
         # self.cache_index = cache_index
         # self.object_path = object_path
         # self.named_properties = named_properties
-        if self.special:
-            ret.update({"special" : self.special})
-        if self.user_content_type:
-            ret.update({"user_content_type" : self.user_content_type})
-        if self.cache_index:
-            ret.update({"cache_index" : self.cache_index})
+        ret.update({"special" : self.special})
+        ret.update({"user_content_type" : self.user_content_type})
         if self.object_path:
             ret.update({"object_path" : self.object_path})
+        if self.cache_index != -1:
+            ret.update({"cache_index" : self.cache_index})
         if self.named_properties:
-            named_properties = list()
+            named_properties = dict()
+            print(f"[+] named_properties: {type(self.named_properties)}")
             for prop in self.named_properties:
-                named_properties.append(prop.to_dict())
+                print(f"[!] prop: {prop}")
+                named_properties.update(prop.to_dict())
             ret.update({"named_properties" : named_properties})
             # for prop in self.named_properties:
             #     ret.update(prop.to_dict())
         return ret
+
+    @classmethod
+    def from_dict(cls, dictionary):
+        special = dictionary["special"]
+        user_content_type = dictionary["user_content_type"]
+
+        object_path = ""
+        if "object_path" in dictionary:
+            object_path = dictionary["object_path"]
+        cache_index = -1
+        if "cache_index" in dictionary:
+            cache_index = dictionary["cache_index"]
+        named_properties = []
+        if "named_properties" in dictionary:
+            properties = dictionary["named_properties"]
+            print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+            print(properties)
+            print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+            for name, data in properties.items():
+                print(name)
+                print(data)
+                print("=======================")
+                named_properties.append(NamedProperty.from_dict(name, data))
+            # named_properties = properties
+        
+        return cls(special, user_content_type, object_path, cache_index, named_properties)
 
     def to_level(writer, data):
         special = data["special"]
@@ -1424,9 +1575,19 @@ class Episode(object):
                 scripts.append(script)
         return cls(scripts)
 
-    def from_json(self, json_path):
+    @classmethod
+    def from_json(cls, json_path):
+        global CACHED_STRINGS
+        assert not CACHED_STRINGS       # TODO: CACHED_STRINGS should be empty??
         with open(json_path, "rb") as f:
-            self.episode = json.loads(f.read())
+            episode = json.loads(f.read())
+        CACHED_STRINGS = episode["cached_strings"]
+        scripts = list()
+        for script_dict in episode["scripts"]:
+            script = ScriptObject.from_dict(script_dict)
+            print(script)
+            scripts.append(script)
+        return cls(scripts)
 
     def from_in_memory(self, bytes_data):
         with io.BytesIO(bytes_data) as buffer:
@@ -1445,14 +1606,15 @@ class Episode(object):
             self.episode["episode"] = scripts
 
     def to_json(self, json_path):
-        print(self.scripts)
-        print()
-        # print(self.scripts[0]["named_properties"][0].property_)
         dicts = list()
         for script in self.scripts:
             dicts.append(script.to_dict())
+        episode = {
+            "cached_strings" : CACHED_STRINGS,
+            "scripts" : dicts,
+        }
         with open(json_path, "wb") as f:
-            f.write(json.dumps(dicts, indent=2).encode())
+            f.write(json.dumps(episode, indent=2).encode())
 
     def to_episode(self, episode_path):
         with open(episode_path, "wb") as f:
@@ -1587,12 +1749,15 @@ def main():
     if convert_type == "from_json":
         print("TODO!!")
         e = Episode.from_json(input_path)
+        print(type(e.scripts[0]))
         print(e.scripts)
         # e.from_json(input_path)
         # e.to_episode(output_path)
     elif convert_type == "to_json":
         e = Episode.from_episode(input_path)
         e.to_json(output_path)
+        print(type(e.scripts[0]))
+        print(e.scripts)
 
 
 if __name__ == "__main__":
