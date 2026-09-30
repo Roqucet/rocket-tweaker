@@ -136,7 +136,7 @@ class BaseObject(ABC):
 class CommonHeader(BaseObject):
     def __init__(self, strings, property_length, guid):
         self.strings = strings
-        self.property_length = property_length
+        # self.property_length = property_length
         self.guid = guid
 
     # Override __bool__ so we return false if there's no strings or guid
@@ -674,16 +674,11 @@ class MapProperty(BaseObject):
             for _ in range(count):
                 # TODO: Don't modify key/value types to make json.dumps happy, instead fix them in the to_dict method so the values are editable
                 key = key_class.from_level(reader, include_header=False, header_data=key_header_data)
-                if isinstance(key, dict):
-                    # Convert it to a JSON string so it is hashable & python is happy
-                    key = json.dumps(key)
-                if isinstance(key, IntProperty):
-                    # Convert it to an int
-                    key = key.int_
+                # if isinstance(key, dict):
+                #     # Used in one of the actor properties. intpoint struct. Needs to be updated to fit the rewrite
+                #     # Convert it to a JSON string so it is hashable & python is happy
+                #     key = json.dumps(key)
                 value = value_class.from_level(reader, include_header=False, header_data=value_header_data)
-                if isinstance(value, StrProperty):
-                    # Convert it to an int
-                    value = value.string
                 map_data.update({key: value})
         else:
             print(f"Unimplemented map type(s)!: @{reader.stream.tell():#2x} \"{key_type}\" || \"{value_type}\"")
@@ -705,8 +700,14 @@ class MapProperty(BaseObject):
         # ret.update({"bytes_to_read" : self.bytes_to_read})
         ret.update({"unknown2" : self.unknown2})
         # ret.update({"count" : self.count})
-        # TODO: Convert the map_data to something hashable by json.dumps
-        ret.update({"map_data" : self.map_data})
+        print(self.map_data)
+        # Convert the map_data to something hashable by json.dumps
+        new_map_data = {}
+        for key, value in self.map_data.items():
+            new_key = key.int_ if isinstance(key, IntProperty) else key
+            new_value = value.string if isinstance(value, StrProperty) else value
+            new_map_data.update({new_key : new_value})
+        ret.update({"map_data" : new_map_data})
         return ret
 
     @classmethod
@@ -728,7 +729,13 @@ class MapProperty(BaseObject):
         # count = dictionary["count"]
         count = -1
         map_data = dictionary["map_data"]
-        return cls(unknown, key_type, include_key_header, key_header_data, value_type, include_value_header, value_header_data, bytes_to_read, unknown2, count, map_data)
+        # Convert the map_data to the ?Property types
+        new_map_data = {}
+        for key, value in map_data.items():
+            new_key = IntProperty(None, int(key)) if key_type == "IntProperty" else key
+            new_value = StrProperty(None, value) if value_type == "StrProperty" else value
+            new_map_data.update({new_key : new_value})
+        return cls(unknown, key_type, include_key_header, key_header_data, value_type, include_value_header, value_header_data, bytes_to_read, unknown2, count, new_map_data)
 
     def to_level(self, writer):        
         count = len(self.map_data)
@@ -769,22 +776,10 @@ class MapProperty(BaseObject):
                 else:
                     print(f"Warning! Untested map element types \"{self.key_type}\" & \"{self.value_type}\". Potential for incorrect parsing / crash")
                 
-                # TODO: Change this to be done in the from_dict method
-                print(key)
-                print(value)
-                print("-----------------------------")
-                if self.key_type == "IntProperty":
-                    # Create int property based on int value
-                    key = IntProperty(CommonHeader.create_empty(), int(key))
-                if self.value_type == "StrProperty":
-                    # Create int property based on string value
-                    value = StrProperty(CommonHeader.create_empty(), value)
-                print(key)
-                print(value)
-                print("=================================")
-                if isinstance(key, str):
-                    # Convert it from a JSON string so the struct unparser works
-                    key = json.loads(key)
+                # if isinstance(key, str):
+                #     # TODO: Check the actor property caveat in from_level
+                #     # Convert it from a JSON string so the struct unparser works
+                #     key = json.loads(key)
                 key.to_level(writer, include_header=False, header_data=self.key_header_data)
                 value.to_level(writer, include_header=False, header_data=self.value_header_data)
             else:
@@ -1719,9 +1714,11 @@ def main():
     assert not USE_LENGTHS
     if convert_type == "from_json":
         e = Episode.from_json(input_path)
+        print(e.scripts)
         e.to_episode(output_path)
     elif convert_type == "to_json":
         e = Episode.from_episode(input_path)
+        print(e.scripts)
         e.to_json(output_path)
 
 
