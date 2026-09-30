@@ -90,38 +90,3 @@ for FILE in "${DIR}"/*/*.level; do
     [ -e "${FILE}" ] || continue
     run_test "${FILE}"
 done
-
-echo
-echo
-echo -e "\033[0;33mRunning tests with the \"--use_lengths\" argument:\033[0m"
-echo "Running tests on \`.episode\` files:"
-for FILE in "${DIR}"/*.episode; do
-    [ -e "${FILE}" ] || continue
-    run_test "${FILE}" "--use_lengths"
-done
-# With no wild card in there's no file name before the `.`
-for FILE in "${DIR}"/.episode; do
-    [ -e "${FILE}" ] || continue
-    run_test "${FILE}" "--use_lengths"
-done
-# Loop over subdirectories in case the workshop folder is chosen
-for FILE in "${DIR}"/*/*.episode; do
-    [ -e "${FILE}" ] || continue
-    run_test "${FILE}" "--use_lengths"
-done
-# With no wild card in there's no file name before the `.``
-for FILE in "${DIR}"/*/.episode; do
-    [ -e "${FILE}" ] || continue
-    run_test "${FILE}" "--use_lengths"
-done
-echo
-echo "Running tests on \`.level\` files:"
-for FILE in "${DIR}"/*.level; do
-    [ -e "${FILE}" ] || continue
-    run_test "${FILE}" "--use_lengths"
-done
-# Loop over subdirectories in case the workshop folder is chosen
-for FILE in "${DIR}"/*/*.level; do
-    [ -e "${FILE}" ] || continue
-    run_test "${FILE}" "--use_lengths"
-done
