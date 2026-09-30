@@ -129,7 +129,7 @@ class BaseObject(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def to_level(self, writer, header):
+    def to_level(self, writer):
         """Write an object to a level file byte stream"""
         raise NotImplementedError
 
@@ -139,10 +139,13 @@ class CommonHeader(BaseObject):
         self.property_length = property_length
         self.guid = guid
 
-    # Override bool so we return false if there's no strings & guid
+    # Override __bool__ so we return false if there's no strings or guid
     def __bool__(self):
         return bool(self.strings or self.guid)
-        # return True
+
+    @classmethod
+    def create_empty(cls):
+        return cls([], -1, None)
 
     @classmethod
     def from_level(cls, reader, optional_guid = True):
@@ -187,16 +190,18 @@ class CommonHeader(BaseObject):
             guid = dictionary["guid"]
         return cls(strings, property_length, guid)
 
-    def to_level(self, writer, header, replace_byte_count = -1, optional_guid = True):
-        for string in header["strings"]:
+    def to_level(self, writer, replace_byte_count = -1, optional_guid = True):
+        for string in self.strings:
             writer.write_u32(1)
             writer.write_string(string)
         writer.write_data(b'\x00' * 4)
         if replace_byte_count != -1:
             writer.write_u32(replace_byte_count)
         else:
-            writer.write_u32(header["bytes"])
+            writer.write_u32(self.property_length)
 
+        # TODO: find a case where this is true
+        # Should fail a level -> JSON -> level test as it isn't unparsed
         if optional_guid:
             writer.write_data(b'\x00' * 1)
 
@@ -225,8 +230,8 @@ class ObjectProperty(BaseObject):
         return ret
 
     @classmethod
-    def from_dict(cls, dictionary):
-        header = None
+    def from_dict(cls, dictionary, include_header=True):
+        header = CommonHeader.create_empty() if include_header else None
         if "header" in dictionary:
             header = CommonHeader.from_dict(dictionary.pop("header"))
         
@@ -234,26 +239,27 @@ class ObjectProperty(BaseObject):
 
         return cls(header, object_)
 
-    def to_level(writer, data, include_header=True, header_data=None):
+    def to_level(self, writer, include_header=True, header_data=None):
         if include_header:
+            # Put the header in, but remember the position so we can update the length later
             header_pos = writer.stream.tell()
-            CommonHeader.to_level(writer, data["header"])
+            self.header.to_level(writer, replace_byte_count=0x41414141)
+            # CommonHeader.to_level(writer, data["header"])
             byte_count_start = writer.stream.tell()
-            obj = data["object"]
-        else:
-            obj = data
-        ScriptObject.to_level(writer, obj)
+        self.object_.to_level(writer)
+        # ScriptObject.to_level(writer, obj)
 
         if include_header:
-            header = data["header"]
             # Calculate bytes dynamically
             current_pos = writer.stream.tell()
             writer.stream.seek(header_pos, os.SEEK_SET)
             if USE_LENGTHS:
-                CommonHeader.to_level(writer, header)
+                self.header.to_level(writer)
+                # CommonHeader.to_level(writer, header)
             else:
                 byte_count = current_pos - byte_count_start
-                CommonHeader.to_level(writer, header, replace_byte_count=byte_count)
+                self.header.to_level(writer, replace_byte_count=byte_count)
+                # CommonHeader.to_level(writer, header, replace_byte_count=byte_count)
             writer.stream.seek(current_pos, os.SEEK_SET)
 
 class SoftObjectProperty(object):
@@ -301,7 +307,7 @@ class SoftObjectProperty(object):
         ret.update({"soft_object": obj,})
         return ret
 
-    def to_level(writer, data, include_header=True):
+    def to_level(self, writer, include_header=True):
         if include_header:
             header_pos = writer.stream.tell()
             CommonHeader.to_level(writer, data["header"])
@@ -343,13 +349,15 @@ class ArrayOfBytes(object):
     def __init__(self, data):
         self.data = data
     
+    def __repr__(self):
+        return "<" + self.data + ">"
+
     def to_dict(self):
         return {"data" : self.data}
     
     @classmethod
     def from_dict(cls, dictionary):
-        print(dictionary)
-        cls(dictionary["data"])
+        return cls(dictionary["data"])
 
 class ArrayProperty(BaseObject):
     def __init__(self, unknown, element_type, include_type_header, header_data, byte_count, length, elements):
@@ -357,7 +365,7 @@ class ArrayProperty(BaseObject):
         self.element_type = element_type
         self.include_type_header = include_type_header
         self.header_data = header_data
-        self.byte_count = byte_count
+        # self.byte_count = byte_count
         self.length = length
         self.elements = elements
 
@@ -472,7 +480,8 @@ class ArrayProperty(BaseObject):
                     # except AttributeError as e:
                     #     print(f"[!] {e}")
                     #     elements.append(element_class.from_level(reader, include_header=False, header_data=header_data))
-                    elements.append(element_class.from_dict(element))
+                    # print(f"Warning! Array element type \"{element_type}\".")
+                    elements.append(element_class.from_dict(element, include_header=False))
             else:
                 print(f"Unimplemented array property type!: \"{element_type}\"")
                 # -4 because bytes_to_read is the number of bytes from before the length field
@@ -480,37 +489,31 @@ class ArrayProperty(BaseObject):
                 elements.append(data)
         return cls(unknown, element_type, include_type_header, header_data, byte_count, length, elements)
 
-    def to_level(writer, data):
-        non_zero_unknown = data["non zero unknown"]
-        element_type = data["type"]
-        include_type_header = data["include_type_header"]
-        header_data = data["header_data"]
+    def to_level(self, writer):
         if USE_LENGTHS:
-            length = data["length"]
+            length = self.length
         else:
-            if element_type == "ByteProperty":
+            if self.element_type == "ByteProperty":
                 # Need to base64 decode the byte array to get the correct length
-                length = len(base64.b64decode(data["elements"][0]["data"]))
+                length = len(base64.b64decode(self.elements[0].data))
             else:
-                length = len(data["elements"])
+                length = len(self.elements)
 
-        elements = data["elements"]
+        writer.write_data(self.unknown.encode())
+        writer.write_string(self.element_type)
 
-        writer.write_data(non_zero_unknown.encode())
-        writer.write_string(element_type)
-
-        writer.write_u32(include_type_header)
+        writer.write_u32(self.include_type_header)
         # Extra header info
-        if include_type_header != 0:
-            assert header_data     # Make sure header data exists
-            if element_type == "EnumProperty":
+        if self.include_type_header != 0:
+            assert self.header_data     # Make sure header data exists
+            if self.element_type == "EnumProperty":
                 # We can call parse_separate_header since we know the type
-                EnumProperty.unparse_separate_header(writer, header_data)
-            elif element_type == "StructProperty":
+                EnumProperty.unparse_separate_header(writer, self.header_data)
+            elif self.element_type == "StructProperty":
                 # We can call parse_separate_header since we know the type
-                StructProperty.unparse_separate_header(writer, magic=include_type_header, header_data=header_data)
+                StructProperty.unparse_separate_header(writer, magic=self.include_type_header, header_data=self.header_data)
             else:
-                print(f"Warning! Unknown array type with extra data! Type:\"{element_type}\". Probable crash")
+                print(f"Warning! Unknown array type with extra data! Type:\"{self.element_type}\". Probable crash")
 
         # Calculate bytes dynamically
         byte_count_pos = writer.stream.tell()
@@ -520,23 +523,24 @@ class ArrayProperty(BaseObject):
 
         writer.write_u32(length)
 
-        for element in elements:
-            if element_type == "ByteProperty":      # Hacky ByteProperty fix
-                # Use the fallback, which works & is expected by NamedProperty to deserialize ActorProperties
-                writer.write_data(base64.b64decode(element["data"].encode()))
-            elif element_type in property_string_to_class.keys():
-                element_class = property_string_to_class[element_type]
+        if self.element_type == "ByteProperty":      # Hacky ByteProperty fix
+            # Use the fallback, which works & is expected by NamedProperty to deserialize ActorProperties
+            writer.write_data(base64.b64decode(self.elements[0].data))
+        elif self.element_type in property_string_to_class:
+            for element in self.elements:
+                element_class = property_string_to_class[self.element_type]
                 if not element_class in TESTED_ARRAY_CLASSES:
-                    print(f"Warning! Untested array element type \"{element_type}\". Potential for incorrect unparsing / crash")
-                element_class.to_level(writer, element, include_header=False, header_data=header_data)
-            else:
-                writer.write_data(base64.b64decode(element["data"].encode()))
+                    print(f"Warning! Untested array element type \"{self.element_type}\". Potential for incorrect unparsing / crash")
+                element.to_level(writer, include_header=False, header_data=self.header_data)
+                # element_class.to_level(writer, element, include_header=False, header_data=self.header_data)
+        else:
+            writer.write_data(base64.b64decode(self.elements[0]["data"].encode()))
 
         # Hacky fix for data length
         current_pos = writer.stream.tell()
         writer.stream.seek(byte_count_pos, os.SEEK_SET)
         if USE_LENGTHS:
-            writer.write_u32(data["bytes"])
+            writer.write_u32(self.bytes)
         else:
             byte_count = current_pos - byte_count_start
             writer.write_u32(byte_count)
@@ -551,9 +555,9 @@ class MapProperty(BaseObject):
         self.value_type = value_type
         self.include_value_header = include_value_header
         self.value_header_data = value_header_data
-        self.bytes_to_read = bytes_to_read
+        # self.bytes_to_read = bytes_to_read
         self.unknown2 = unknown2
-        self.count = count
+        # self.count = count
         self.map_data = map_data
 
     @classmethod
@@ -587,9 +591,8 @@ class MapProperty(BaseObject):
         if key_type in property_string_to_class and value_type in property_string_to_class:
             key_class = property_string_to_class[key_type]
             value_class = property_string_to_class[value_type]
-            if key_class == IntProperty and value_class == StrProperty:
-                pass
-            elif key_class == StructProperty and value_class == StructProperty:
+            if key_class == IntProperty and value_class == StrProperty \
+                or key_class == StructProperty and value_class == StructProperty:
                 pass
             else:
                 print(f"Warning! Untested map element types \"{key_type}\" & \"{value_type}\". Potential for incorrect parsing / crash")
@@ -600,6 +603,7 @@ class MapProperty(BaseObject):
                 # key = list(key_class.from_level(reader, include_header=False, header_data=key_header_data).values())
                 # assert len(key) == 1
                 # key = key[0]
+                # TODO: Don't modify key/value types to make json.dumps happy, instead fix them in the to_dict method so the values are editable
                 key = key_class.from_level(reader, include_header=False, header_data=key_header_data)
                 if isinstance(key, dict):
                     # Convert it to a JSON string so it is hashable & python is happy
@@ -645,9 +649,10 @@ class MapProperty(BaseObject):
         ret.update({"include_value_header" : self.include_value_header})
         if self.value_header_data:
             ret.update({"value_header_data" : self.value_header_data})
-        ret.update({"bytes_to_read" : self.bytes_to_read})
+        # ret.update({"bytes_to_read" : self.bytes_to_read})
         ret.update({"unknown2" : self.unknown2})
-        ret.update({"count" : self.count})
+        # ret.update({"count" : self.count})
+        # TODO: Convert the map_data to something hashable by json.dumps
         ret.update({"map_data" : self.map_data})
         return ret
 
@@ -664,49 +669,42 @@ class MapProperty(BaseObject):
         value_header_data = None
         if "value_header_data" in dictionary:
             value_header_data = dictionary["value_header_data"]
-        bytes_to_read = dictionary["bytes_to_read"]
+        # bytes_to_read = dictionary["bytes_to_read"]
+        bytes_to_read = -1
         unknown2 = dictionary["unknown2"]
-        count = dictionary["count"]
+        # count = dictionary["count"]
+        count = -1
         map_data = dictionary["map_data"]
         return cls(unknown, key_type, include_key_header, key_header_data, value_type, include_value_header, value_header_data, bytes_to_read, unknown2, count, map_data)
 
-    def to_level(writer, data):
-        non_zero_unknown = data["non_zero_unknown"]
-        non_zero_unknown2 = data["non_zero_unknown2"]
-        key_type = data["key_type"]
-        include_key_header = data["include_key_header"]
-        key_header_data = data["key_header_data"]
-        value_type = data["value_type"]
-        include_value_header = data["include_value_header"]
-        value_header_data = data["value_header_data"]
-        
-        if USE_LENGTHS:
-            count = data["count"]
-        else:
-            count = len(data["map data"])
-        map_data = data["map data"]
+    def to_level(self, writer):        
+        # if USE_LENGTHS:
+        #     count = self.count
+        # else:
+        #     count = len(self.map_data)
+        count = len(self.map_data)
 
-        writer.write_data(non_zero_unknown.encode())
-        writer.write_string(key_type)
-        writer.write_u32(include_key_header)
-        if key_header_data:
-            if key_type == "StructProperty":
-                StructProperty.unparse_separate_header(writer, magic=include_key_header, header_data=key_header_data)
+        writer.write_data(self.unknown.encode())
+        writer.write_string(self.key_type)
+        writer.write_u32(self.include_key_header)
+        if self.key_header_data:
+            if self.key_type == "StructProperty":
+                StructProperty.unparse_separate_header(writer, magic=self.include_key_header, header_data=self.key_header_data)
             else:
-                print(f"Warning! Unknown key with extra data! Key Type:\"{key_type}\". Probable crash")
+                print(f"Warning! Unknown key with extra data! Key Type:\"{self.key_type}\". Probable crash")
 
-        writer.write_string(value_type)
-        writer.write_u32(include_value_header)
-        if value_header_data:
-            if key_type == "StructProperty":
-                StructProperty.unparse_separate_header(writer, magic=include_key_header, header_data=value_header_data)
+        writer.write_string(self.value_type)
+        writer.write_u32(self.include_value_header)
+        if self.value_header_data:
+            if self.value_type == "StructProperty":
+                StructProperty.unparse_separate_header(writer, magic=self.include_value_header, header_data=self.value_header_data)
             else:
-                print(f"Warning! Unknown key with extra data! Value Type:\"{value_type}\". Probable crash")
+                print(f"Warning! Unknown key with extra data! Value Type:\"{self.value_type}\". Probable crash")
 
         # Calculate bytes dynamically
         byte_count_pos = writer.stream.tell()
         writer.write_u32(0x41414141)
-        writer.write_data(non_zero_unknown2.encode())
+        writer.write_data(self.unknown2.encode())
         byte_count_start = writer.stream.tell()
 
         writer.write_data(b'\x00' * 4)
@@ -714,33 +712,45 @@ class MapProperty(BaseObject):
         # Write map count based on element length
         writer.write_u32(count)
 
-        for key in map_data:
-            if key_type in property_string_to_class.keys() and value_type in property_string_to_class.keys():
-                key_class = property_string_to_class[key_type]
-                value_class = property_string_to_class[value_type]
-                if key_class == IntProperty and value_class == StrProperty:
-                    pass
-                elif key_class == StructProperty and value_class == StructProperty:
+        for key, value in self.map_data.items():
+            if self.key_type in property_string_to_class and self.value_type in property_string_to_class:
+                if self.key_type == "IntProperty" and self.value_type == "StrProperty" or \
+                    self.key_type == "StructProperty" and self.value_type == "StructProperty":
                     pass
                 else:
-                    print(f"Warning! Untested map element types \"{key_type}\" & \"{value_type}\". Potential for incorrect parsing / crash")
-                value = map_data[key]
+                    print(f"Warning! Untested map element types \"{self.key_type}\" & \"{self.value_type}\". Potential for incorrect parsing / crash")
+                
+                # TODO: Change this to be done in the from_dict method
+                print(key)
+                print(value)
+                print("-----------------------------")
+                if self.key_type == "IntProperty":
+                    # Create int property based on int value
+                    key = IntProperty(CommonHeader.create_empty(), int(key))
+                if self.value_type == "StrProperty":
+                    # Create int property based on string value
+                    value = StrProperty(CommonHeader.create_empty(), value)
+                print(key)
+                print(value)
+                print("=================================")
                 if isinstance(key, str):
                     # Convert it from a JSON string so the struct unparser works
                     key = json.loads(key)
-                key_class.to_level(writer, key, include_header=False, header_data=key_header_data)
-                value_class.to_level(writer, value, include_header=False, header_data=value_header_data)
+                # key_class.to_level(writer, key, include_header=False, header_data=self.key_header_data)
+                # value_class.to_level(writer, value, include_header=False, header_data=self.value_header_data)
+                key.to_level(writer, include_header=False, header_data=self.key_header_data)
+                value.to_level(writer, include_header=False, header_data=self.value_header_data)
             else:
                 # TODO: Untested
                 # Sanity check
                 assert key == "data"
-                writer.write_data(base64.b64decode(map_data[key].encode()))
+                writer.write_data(base64.b64decode(self.map_data[key].encode()))
 
         # Hacky fix for data length
         current_pos = writer.stream.tell()
         writer.stream.seek(byte_count_pos, os.SEEK_SET)
         if USE_LENGTHS:
-            writer.write_u32(data["bytes"])
+            writer.write_u32(self.bytes)
         else:
             byte_count = current_pos - byte_count_start
             writer.write_u32(byte_count)
@@ -767,35 +777,33 @@ class StrProperty(BaseObject):
         return ret
 
     @classmethod
-    def from_dict(cls, dictionary):
-        header = None
+    def from_dict(cls, dictionary, include_header=True):
+        header = CommonHeader.create_empty() if include_header else None
         if "header" in dictionary:
             header = CommonHeader.from_dict(dictionary["header"])
         string = dictionary["string"]
         return cls(header, string)
 
-    def to_level(writer, data, include_header=True, header_data=None):
+    def to_level(self, writer, include_header=True, header_data=None):
         if include_header:
             header_pos = writer.stream.tell()
-            CommonHeader.to_level(writer, data["header"], replace_byte_count=0x41414141)
+            # CommonHeader.to_level(writer, data["header"], replace_byte_count=0x41414141)
+            self.header.to_level(writer, replace_byte_count=0x41414141)
             byte_count_start = writer.stream.tell()
-            string = data["string"]
-        else:
-            string = data
 
-        writer.write_string(string)
+        writer.write_string(self.string)
 
         # Hacky fix for utf-16 strings
         if include_header:
-            header = data["header"]
             # Calculate bytes dynamically
             current_pos = writer.stream.tell()
             writer.stream.seek(header_pos, os.SEEK_SET)
             if USE_LENGTHS:
-                CommonHeader.to_level(writer, header)
+                self.header.to_level(writer)
             else:
                 byte_count = current_pos - byte_count_start
-                CommonHeader.to_level(writer, header, replace_byte_count=byte_count)
+                self.header.to_level(writer, replace_byte_count=byte_count)
+                # CommonHeader.to_level(writer, header, replace_byte_count=byte_count)
             writer.stream.seek(current_pos, os.SEEK_SET)
 
 class TextProperty(BaseObject):
@@ -821,7 +829,7 @@ class TextProperty(BaseObject):
         })
         return ret
 
-    def to_level(writer, data, include_header=True):
+    def to_level(self, writer, include_header=True):
         if include_header:
             text = data["text"]
 
@@ -876,21 +884,19 @@ class FloatProperty(BaseObject):
         return ret
 
     @classmethod
-    def from_dict(cls, dictionary):
-        header = None
+    def from_dict(cls, dictionary, include_header=True):
+        header = CommonHeader.create_empty() if include_header else None
         if "header" in dictionary:
             header = CommonHeader.from_dict(dictionary["header"])
         float_ = dictionary["float"]
         return cls(header, float_)
 
-    def to_level(writer, data, include_header=True):
+    def to_level(self, writer, include_header=True):
         if include_header:
             # Always 4 bytes
-            CommonHeader.to_level(writer, data["header"], replace_byte_count=4)
-            float_data = data["float"]
-        else:
-            float_data = data
-        writer.write_f32(float_data)
+            # CommonHeader.to_level(writer, data["header"], replace_byte_count=4)
+            self.header.to_level(writer, replace_byte_count=4)
+        writer.write_f32(self.float_)
 
 class DoubleProperty(BaseObject):
     def from_level(reader, include_header=True):
@@ -902,7 +908,7 @@ class DoubleProperty(BaseObject):
         ret.update({"double": double_data,})
         return ret
 
-    def to_level(writer, data, include_header=True):
+    def to_level(self, writer, include_header=True):
         if include_header:
             # Always 8 bytes
             CommonHeader.to_level(writer, data["header"], replace_byte_count=8)
@@ -912,23 +918,36 @@ class DoubleProperty(BaseObject):
         writer.write_f64(double_data)
 
 class BoolProperty(BaseObject):
-    def from_level(reader, include_header=True, header_data=None):
+    def __init__(self, header, bool_):
+        self.header = header
+        self.bool_ = bool_
+
+    @classmethod
+    def from_level(cls, reader, include_header = True, header_data = None):
+        header = CommonHeader.from_level(reader, optional_guid=False) if include_header else None
+        bool_ = reader.read_u8()
+        return cls(header, bool_)
+
+    def to_dict(self):
         ret = dict()
-        if include_header:
-            header = CommonHeader.from_level(reader, optional_guid=False)
-            ret.update({"header": header})
-        bool_data = reader.read_u8()
-        ret.update({"bool": bool_data,})
+        if self.header:
+            ret.update({"header" : self.header.to_dict()})
+        ret.update({"bool" : self.bool_})
         return ret
-    
-    def to_level(writer, data, include_header=True, header_data=None):
+
+    @classmethod
+    def from_dict(cls, dictionary, include_header=True):
+        header = CommonHeader.create_empty() if include_header else None
+        if "header" in dictionary:
+            header = CommonHeader.from_dict(dictionary["header"])
+        bool_ = dictionary["bool"]
+        return cls(header, bool_)
+
+    def to_level(self, writer, include_header = True, header_data = None):
         if include_header:
             # Always 0 bytes
-            CommonHeader.to_level(writer, data["header"], replace_byte_count=0, optional_guid=False)
-            bool_data = data["bool"]
-        else:
-            bool_data = data
-        writer.write_u8(bool_data)
+            self.header.to_level(writer, replace_byte_count=0, optional_guid=False)
+        writer.write_u8(self.bool_)
 
 class IntProperty(BaseObject):
     def __init__(self, header, int_):
@@ -951,21 +970,18 @@ class IntProperty(BaseObject):
         return ret
 
     @classmethod
-    def from_dict(cls, dictionary):
-        header = None
+    def from_dict(cls, dictionary, include_header=True):
+        header = CommonHeader.create_empty() if include_header else None
         if "header" in dictionary:
             header = CommonHeader.from_dict(dictionary["header"])
         int_ = dictionary["int"]
         return cls(header, int_)
 
-    def to_level(self, writer, data, include_header = True, header_data = None):
+    def to_level(self, writer, include_header = True, header_data = None):
         if include_header:
             # Always 4 bytes
-            CommonHeader.to_level(writer, data["header"], replace_byte_count=4)
-            num = data["int"]
-        else:
-            num = data
-        writer.write_s32(num)
+            self.header.to_level(writer, replace_byte_count=4)
+        writer.write_s32(self.int_)
 
 class ByteProperty(BaseObject):
     def from_level(reader, include_header=True):
@@ -978,7 +994,7 @@ class ByteProperty(BaseObject):
         ret.update({"byte_value": byte_value,})
         return ret
 
-    def to_level(writer, data, include_header=True):
+    def to_level(self, writer, include_header=True):
         byte_value = data["byte_value"]
         if include_header:
             header_pos = writer.stream.tell()
@@ -1054,7 +1070,7 @@ class EnumProperty(BaseObject):
             "type": property_type,
         }
 
-    def to_level(writer, data, include_header=True, header_data=None):
+    def to_level(self, writer, include_header=True, header_data=None):
         if include_header:
             non_zero_unknown1 = data["non_zero_unknown1"]
             string1 = data["string1"]
@@ -1210,52 +1226,53 @@ class NamedProperty(BaseObject):
 
         return cls(name, property_type, property_object)
 
-    def to_level(writer, data):
-        name = data["name"]
-        property_type = data["type"]
-        property_data = data["data"]
-
-        writer.write_string(name)
-        writer.write_string(property_type)
+    def to_level(self, writer):
+        writer.write_string(self.name)
+        writer.write_string(self.property_type)
 
         # Hacky fix to parse the ActorProperties byte array. Needlessly specific (name is sufficient)
-        if name == "ActorProperties" and property_type == "ArrayProperty" and property_data["type"] == "ByteProperty":
-            # Replace the byte array base64 data with the parsed script objects
-            # Actor properties use a separate string cache (likely because Talos parses them after the main script)
-            
-            # TODO: Hacky (& potentially slow) fix for separate string caches
-            global CACHED_STRINGS
-            global SOFT_OBJECT_CACHED_STRINGS
-            saved_cache = CACHED_STRINGS.copy()
-            saved_soft_cache = SOFT_OBJECT_CACHED_STRINGS.copy()
-            CACHED_STRINGS = list()
-            SOFT_OBJECT_CACHED_STRINGS = list()
-            
-            actor_prop = Episode()
-            actor_prop.episode = property_data["elements"][0]["data"]
-            actor_prop_bytes = b''
-            actor_prop_bytes = actor_prop.to_in_memory()
-            property_data["elements"][0]["data"] = base64.b64encode(actor_prop_bytes).decode()
+        # TODO: make this better later after rewrite
+        if False:
+            if self.name == "ActorProperties" and self.property_type == "ArrayProperty" and self.property_object.element_type == "ByteProperty":
+                # Replace the byte array base64 data with the parsed script objects
+                # Actor properties use a separate string cache (likely because Talos parses them after the main script)
+                
+                # TODO: Hacky (& potentially slow) fix for separate string caches
+                global CACHED_STRINGS
+                global SOFT_OBJECT_CACHED_STRINGS
+                saved_cache = CACHED_STRINGS.copy()
+                saved_soft_cache = SOFT_OBJECT_CACHED_STRINGS.copy()
+                CACHED_STRINGS = list()
+                SOFT_OBJECT_CACHED_STRINGS = list()
+                
+                actor_prop = Episode()
+                actor_prop.episode = self.property_object["elements"][0]["data"]
+                actor_prop_bytes = b''
+                actor_prop_bytes = actor_prop.to_in_memory()
+                self.property_object["elements"][0]["data"] = base64.b64encode(actor_prop_bytes).decode()
 
-            CACHED_STRINGS = saved_cache.copy()
-            SOFT_OBJECT_CACHED_STRINGS = saved_soft_cache.copy()
+                CACHED_STRINGS = saved_cache.copy()
+                SOFT_OBJECT_CACHED_STRINGS = saved_soft_cache.copy()
 
-        if property_type in property_string_to_class.keys():
-            property_string_to_class[property_type].to_level(writer, property_data)
+        if self.property_type in property_string_to_class:
+            # print(f"Named property type!: \"{self.property_type}\"")
+            self.property_object.to_level(writer)
         else:
-            print(f"Unimplemented named property type!: \"{property_type}\"")
+            print(f"Unimplemented named property type!: \"{self.property_type}\"")
             # If type is unknown, assume it uses the common header
-            CommonHeader.to_level(writer, property_data["header"])
-            writer.write_data(property_data["data"].encode())
+            # TODO: Does this work?
+            assert False
+            self.property_object["header"].to_level(writer)
+            writer.write_data(self.property_object["data"].encode())
 
 class StructProperty(BaseObject):
-    def __init__(self, magic, name, unknown, path, uuid, byte_count, unknown2, data):
+    def __init__(self, magic, struct_name, unknown, path, uuid, byte_count, unknown2, data):
         self.magic = magic
-        self.name = name
+        self.struct_name = struct_name
         self.unknown = unknown
         self.path = path
         self.uuid = uuid
-        self.byte_count = byte_count
+        # self.byte_count = byte_count
         self.unknown2 = unknown2
         self.data = data
 
@@ -1309,14 +1326,14 @@ class StructProperty(BaseObject):
             if path == "/Script/CoreUObject" and struct_name != "Transform":
                 # Transform is special as it is comprised of 1-3 structs
                 print(f"Warning! Struct {struct_name} is likely part of core Unreal Engine and has a known format")
-            named_properties = dict()
+            named_properties = list()
             while True:
                 prop = NamedProperty.from_level(reader)
                 if prop == None:
                     # Hack for None type having no extra bytes
                     reader.stream.seek(-4, os.SEEK_CUR)
                     break
-                named_properties.update(prop.to_dict())
+                named_properties.append(prop)
             data = named_properties
         return cls(magic, struct_name, non_zero_unknown, path, uuid, bytes_to_read, non_zero_unknown2, data)
 
@@ -1343,23 +1360,26 @@ class StructProperty(BaseObject):
     def to_dict(self):
         ret = {}
         ret.update({"magic" : self.magic})
-        ret.update({"name" : self.name})
+        ret.update({"struct_name" : self.struct_name})
         ret.update({"unknown" : self.unknown})
         ret.update({"path" : self.path})
         if self.uuid:
             ret.update({"uuid" : self.uuid})
         # ret.update({"byte_count" : self.byte_count})
         ret.update({"unknown2" : self.unknown2})
-        if self.name in ["Vector", "Quat", "IntPoint", "Rotator", "LinearColor"]:
+        if self.struct_name in ["Vector", "Quat", "IntPoint", "Rotator", "LinearColor"]:
             ret.update(self.data)
         else:       # Custom struct, not part of core Unreal Engine
-            ret.update({"data" : self.data})
+            named_properties = dict()
+            for prop in self.data:
+                named_properties.update(prop.to_dict())
+            ret.update({"data" : named_properties})
         return ret
 
     @classmethod
     def from_dict(cls, dictionary):
         magic = dictionary["magic"]
-        name = dictionary["name"]
+        struct_name = dictionary["struct_name"]
         unknown = dictionary["unknown"]
         path = dictionary["path"]
         uuid = ""
@@ -1368,70 +1388,68 @@ class StructProperty(BaseObject):
         # byte_count = dictionary["byte_count"]
         byte_count = -1
         unknown2 = dictionary["unknown2"]
-        if name == "Vector":
+        if struct_name == "Vector":
             data = dictionary["vector"]
-        elif name == "Quat":
+        elif struct_name == "Quat":
             data = dictionary["quat"]
-        elif name == "IntPoint":
+        elif struct_name == "IntPoint":
             data = dictionary["intpoint"]
-        elif name == "Rotator":
+        elif struct_name == "Rotator":
             data = dictionary["rotator"]
-        elif name == "LinearColor":
+        elif struct_name == "LinearColor":
             data = dictionary["colour"]
         else:       # Custom struct, not part of core Unreal Engine
-            data = dictionary["data"]
-        return cls(magic, name, unknown, path, uuid, byte_count, unknown2, data)
+            named_properties = []
+            for name, data in dictionary["data"].items():
+                print(name)
+                print(data)
+                named_properties.append(NamedProperty.from_dict(name, data))
+            data = named_properties
+        return cls(magic, struct_name, unknown, path, uuid, byte_count, unknown2, data)
 
-    def to_level(writer, data, include_header=True, header_data=None):
+    def to_level(self, writer, include_header=True, header_data=None):
+        print(self)
         if include_header:
-            magic = data["magic"]
-            struct_name = data["struct_name"]
-            non_zero_unknown = data["non_zero_unknown"]
-            path = data["path"]
-            uuid = data["uuid"]
-            non_zero_unknown2 = data["non_zero_unknown2"]
-            inner_data = data["data"]
-
-            writer.write_u32(magic)
-            writer.write_string(struct_name)
-            writer.write_data(non_zero_unknown.encode())
-            writer.write_string(path)
-            if magic == 2:
+            writer.write_u32(self.magic)
+            writer.write_string(self.struct_name)
+            writer.write_data(self.unknown.encode())
+            writer.write_string(self.path)
+            if self.magic == 2:
                 writer.write_data(b'\x00' * 4)
-                writer.write_string(uuid)
+                writer.write_string(self.uuid)
             writer.write_data(b'\x00' * 4)
 
             # Calculate struct bytes dynamically
             byte_count_pos = writer.stream.tell()
             writer.write_u32(0x41414141)
-            writer.write_data(non_zero_unknown2.encode())
+            writer.write_data(self.unknown2.encode())
             byte_count_start = writer.stream.tell()
-        else:
-            inner_data = data
 
-        if header_data:
-            struct_name = header_data["struct_name"]
-            path = header_data["path"]
+        # if header_data:
+        #     struct_name = header_data["struct_name"]
+        #     path = header_data["path"]
 
-        if struct_name == "Vector":
-            vector = inner_data["vector"]
+        if self.struct_name == "Vector":
+            vector = self.data
             writer.write_data(struct.pack("<3d", vector[0], vector[1], vector[2]))
-        elif struct_name == "Quat":
-            quat = inner_data["quat"]
+        elif self.struct_name == "Quat":
+            quat = self.data
             writer.write_data(struct.pack("<4d", quat[0], quat[1], quat[2], quat[3]))
-        elif struct_name == "IntPoint":
-            intpoint = inner_data["intpoint"]
+        elif self.struct_name == "IntPoint":
+            intpoint = self.data
             writer.write_data(struct.pack("<2i", intpoint[0], intpoint[1]))
-        elif struct_name == "Rotator":
-            rotator = inner_data["rotator"]
+        elif self.struct_name == "Rotator":
+            rotator = self.data
             writer.write_data(struct.pack("<3d", rotator[0], rotator[1], rotator[2]))
-        elif struct_name == "LinearColor":
-            colour = inner_data["colour"]
+        elif self.struct_name == "LinearColor":
+            colour = self.data
             writer.write_data(struct.pack("<4f", colour[0], colour[1], colour[2], colour[3]))
         else:
-            named_properties = inner_data
-            for prop in named_properties:
-                NamedProperty.to_level(writer, prop)
+            for prop in self.data:
+                print(prop)
+                print(type(prop))
+                prop.to_level(writer)
+                # NamedProperty.to_level(writer, prop)
             # Write the `None` property
             writer.write_string("None")
 
@@ -1440,7 +1458,8 @@ class StructProperty(BaseObject):
             current_pos = writer.stream.tell()
             writer.stream.seek(byte_count_pos, os.SEEK_SET)
             if USE_LENGTHS:
-                writer.write_u32(data["bytes"])
+                # writer.write_u32(data["bytes"])
+                writer.write_u32(0x41424344)
             else:
                 byte_count = current_pos - byte_count_start
                 writer.write_u32(byte_count)
@@ -1570,37 +1589,27 @@ class ScriptObject(BaseObject):
         
         return cls(special, user_content_type, object_path, cache_index, named_properties)
 
-    def to_level(writer, data):
-        special = data["special"]
-        writer.write_u8(special)
-        if special == 0:
+    def to_level(self, writer):
+        writer.write_u8(self.special)
+        if self.special == 0:
             # Object ends
             return
 
-        user_content_type = data["user_content_type"]
-        cache_index = data["cache_index"]
-        object_path = data["object_path"]
-        named_properties = data["named_properties"]
-
         # Extra padding sometimes, noticed it's the case when `special` == 0x2
-        if special == 0x02:
-            writer.write_u8(user_content_type)
+        if self.special == 0x02:
+            writer.write_u8(self.user_content_type)
 
-        if user_content_type == 0x08:
-            writer.write_string(object_path)
-        elif user_content_type == 0x07:
-            writer.write_string(object_path)
-        elif user_content_type == 0x04:
-            writer.write_u32(cache_index)
-        elif user_content_type == 0x03:
-            writer.write_u32(cache_index)
+        if self.user_content_type == 0x08 or self.user_content_type == 0x07:
+            writer.write_string(self.object_path)
+        elif self.user_content_type == 0x04 or self.user_content_type == 0x03:
+            writer.write_u32(self.cache_index)
 
-        if special == 0x02:
+        if self.special == 0x02:
             writer.write_data(b'\x00')
         
-        if special == 0x02:
-            for prop in named_properties:
-                NamedProperty.to_level(writer, prop)
+        if self.special == 0x02:
+            for prop in self.named_properties:
+                prop.to_level(writer)
             # Write the `None` property
             writer.write_string("None")
             writer.write_data(b'\x00' * 4)
@@ -1678,8 +1687,8 @@ class Episode(object):
             # Unknown what the first 8 bytes are. Always 0
             writer.write_data(b'\x00' * 8)
 
-            for script in self.episode["episode"]:
-                ScriptObject.to_level(writer, script)
+            for script in self.scripts:
+                script.to_level(writer)
 
     def to_in_memory(self):
         with io.BytesIO() as buffer:
@@ -1726,6 +1735,7 @@ property_string_to_class = {
         "TextProperty": TextProperty,
     }
 
+# TODO: Parse the actor properties
 def main():
     # Check python version since we make use of ordered dictionaries which are standard in 3.7+
     # Ordered dictionaries are to ensure element order is preseved (which might not matter to unreal)
@@ -1801,18 +1811,13 @@ def main():
     print(f"Output: {output_path}")
 
     # e = Episode()
+    assert not USE_LENGTHS
     if convert_type == "from_json":
-        print("TODO!!")
         e = Episode.from_json(input_path)
-        # e.to_episode(output_path)
-        print(type(e.scripts[0]))
-        print(e.scripts)
-        # e.from_json(input_path)
+        e.to_episode(output_path)
     elif convert_type == "to_json":
         e = Episode.from_episode(input_path)
         e.to_json(output_path)
-        print(type(e.scripts[0]))
-        print(e.scripts)
 
 
 if __name__ == "__main__":
