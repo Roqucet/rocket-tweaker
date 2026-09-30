@@ -218,15 +218,10 @@ class ObjectProperty(BaseObject):
         except AttributeError as e:
             print(f"[!] Object Property: {e}")
             ret.update({"obj" : self.object_})
-        print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
-        print(ret)
-        print("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
         return ret
 
     @classmethod
     def from_dict(cls, dictionary):
-        print("#################################################")
-        print(dictionary)
         header = None
         if "header" in dictionary:
             header = CommonHeader.from_dict(dictionary.pop("header"))
@@ -346,6 +341,11 @@ class ArrayOfBytes(object):
     
     def to_dict(self):
         return {"data" : self.data}
+    
+    @classmethod
+    def from_dict(cls, dictionary):
+        print(dictionary)
+        cls(dictionary["data"])
 
 class ArrayProperty(BaseObject):
     def __init__(self, unknown, element_type, include_type_header, header_data, byte_count, length, elements):
@@ -451,7 +451,7 @@ class ArrayProperty(BaseObject):
                 # -4 because bytes_to_read is the number of bytes from before the length field
                 # data = base64.b64encode(reader.read_data(bytes_to_read - 4))
                 # elements.append({"data": data.decode()})
-                elements.append(ArrayOfBytes.from_dict(dictionary["elements"]))
+                elements.append(ArrayOfBytes.from_dict(dictionary["elements"][0]))
             elif element_type in property_string_to_class:
                 element_class = property_string_to_class[element_type]
                 if not element_class in TESTED_ARRAY_CLASSES:
@@ -471,7 +471,7 @@ class ArrayProperty(BaseObject):
             else:
                 print(f"Unimplemented array property type!: \"{element_type}\"")
                 # -4 because bytes_to_read is the number of bytes from before the length field
-                data = base64.b64decode(dictionary["elements"].encode())
+                data = base64.b64decode(dictionary["elements"][0].encode())
                 elements.append(data)
         return cls(unknown, element_type, include_type_header, header_data, byte_count, length, elements)
 
@@ -579,7 +579,7 @@ class MapProperty(BaseObject):
         count = reader.read_u32()
 
         map_data = dict()
-        if key_type in property_string_to_class.keys() and value_type in property_string_to_class.keys():
+        if key_type in property_string_to_class and value_type in property_string_to_class:
             key_class = property_string_to_class[key_type]
             value_class = property_string_to_class[value_type]
             if key_class == IntProperty and value_class == StrProperty:
@@ -631,29 +631,39 @@ class MapProperty(BaseObject):
 
     def to_dict(self):
         ret = dict()
-        if self.unknown:
-            ret.update({"unknown" : self.unknown})
-        if self.key_type:
-            ret.update({"key_type" : self.key_type})
-        if self.include_key_header:
-            ret.update({"include_key_header" : self.include_key_header})
+        ret.update({"unknown" : self.unknown})
+        ret.update({"key_type" : self.key_type})
+        ret.update({"include_key_header" : self.include_key_header})
         if self.key_header_data:
             ret.update({"key_header_data" : self.key_header_data})
-        if self.value_type:
-            ret.update({"value_type" : self.value_type})
-        if self.include_value_header:
-            ret.update({"include_value_header" : self.include_value_header})
+        ret.update({"value_type" : self.value_type})
+        ret.update({"include_value_header" : self.include_value_header})
         if self.value_header_data:
             ret.update({"value_header_data" : self.value_header_data})
-        if self.bytes_to_read:
-            ret.update({"bytes_to_read" : self.bytes_to_read})
-        if self.unknown2:
-            ret.update({"unknown2" : self.unknown2})
-        if self.count:
-            ret.update({"count" : self.count})
-        if self.map_data:
-            ret.update({"map_data" : self.map_data})
+        ret.update({"bytes_to_read" : self.bytes_to_read})
+        ret.update({"unknown2" : self.unknown2})
+        ret.update({"count" : self.count})
+        ret.update({"map_data" : self.map_data})
         return ret
+
+    @classmethod
+    def from_dict(cls, dictionary):
+        unknown = dictionary["unknown"]
+        key_type = dictionary["key_type"]
+        include_key_header = dictionary["include_key_header"]
+        key_header_data = None
+        if "key_header_data" in dictionary:
+            key_header_data = dictionary["key_header_data"]
+        value_type = dictionary["value_type"]
+        include_value_header = dictionary["include_value_header"]
+        value_header_data = None
+        if "value_header_data" in dictionary:
+            value_header_data = dictionary["value_header_data"]
+        bytes_to_read = dictionary["bytes_to_read"]
+        unknown2 = dictionary["unknown2"]
+        count = dictionary["count"]
+        map_data = dictionary["map_data"]
+        return cls(unknown, key_type, include_key_header, key_header_data, value_type, include_value_header, value_header_data, bytes_to_read, unknown2, count, map_data)
 
     def to_level(writer, data):
         non_zero_unknown = data["non_zero_unknown"]
@@ -857,9 +867,16 @@ class FloatProperty(BaseObject):
         ret = dict()
         if self.header:
             ret.update({"header" : self.header.to_dict()})
-        if self.float_:
-            ret.update({"float" : self.float_})
+        ret.update({"float" : self.float_})
         return ret
+
+    @classmethod
+    def from_dict(cls, dictionary):
+        header = None
+        if "header" in dictionary:
+            header = CommonHeader.from_dict(dictionary["header"])
+        float_ = dictionary["float"]
+        return cls(header, float_)
 
     def to_level(writer, data, include_header=True):
         if include_header:
@@ -925,9 +942,16 @@ class IntProperty(BaseObject):
         ret = dict()
         if self.header:
             ret.update({"header" : self.header.to_dict()})
-        if self.int_:
-            ret.update({"int" : self.int_})
+        ret.update({"int" : self.int_})
         return ret
+
+    @classmethod
+    def from_dict(cls, dictionary):
+        header = None
+        if "header" in dictionary:
+            header = CommonHeader.from_dict(dictionary["header"])
+        int_ = dictionary["int"]
+        return cls(header, int_)
 
     def to_level(self, writer, data, include_header = True, header_data = None):
         if include_header:
@@ -1325,6 +1349,18 @@ class StructProperty(BaseObject):
         }
         return ret
 
+    @classmethod
+    def from_dict(cls, dictionary):
+        magic = dictionary["magic"]
+        name = dictionary["name"]
+        unknown = dictionary["unknown"]
+        path = dictionary["path"]
+        uuid = dictionary["uuid"]
+        byte_count = dictionary["byte_count"]
+        unknown2 = dictionary["unknown2"]
+        data = dictionary["data"]
+        return cls(magic, name, unknown, path, uuid, byte_count, unknown2, data)
+
     def to_level(writer, data, include_header=True, header_data=None):
         if include_header:
             magic = data["magic"]
@@ -1486,9 +1522,7 @@ class ScriptObject(BaseObject):
             ret.update({"cache_index" : self.cache_index})
         if self.named_properties:
             named_properties = dict()
-            print(f"[+] named_properties: {type(self.named_properties)}")
             for prop in self.named_properties:
-                print(f"[!] prop: {prop}")
                 named_properties.update(prop.to_dict())
             ret.update({"named_properties" : named_properties})
             # for prop in self.named_properties:
@@ -1509,13 +1543,7 @@ class ScriptObject(BaseObject):
         named_properties = []
         if "named_properties" in dictionary:
             properties = dictionary["named_properties"]
-            print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
-            print(properties)
-            print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
             for name, data in properties.items():
-                print(name)
-                print(data)
-                print("=======================")
                 named_properties.append(NamedProperty.from_dict(name, data))
             # named_properties = properties
         
@@ -1585,7 +1613,6 @@ class Episode(object):
         scripts = list()
         for script_dict in episode["scripts"]:
             script = ScriptObject.from_dict(script_dict)
-            print(script)
             scripts.append(script)
         return cls(scripts)
 
@@ -1749,10 +1776,10 @@ def main():
     if convert_type == "from_json":
         print("TODO!!")
         e = Episode.from_json(input_path)
+        # e.to_episode(output_path)
         print(type(e.scripts[0]))
         print(e.scripts)
         # e.from_json(input_path)
-        # e.to_episode(output_path)
     elif convert_type == "to_json":
         e = Episode.from_episode(input_path)
         e.to_json(output_path)
