@@ -139,6 +139,11 @@ class CommonHeader(BaseObject):
         self.property_length = property_length
         self.guid = guid
 
+    # Override bool so we return false if there's no strings & guid
+    def __bool__(self):
+        return bool(self.strings or self.guid)
+        # return True
+
     @classmethod
     def from_level(cls, reader, optional_guid = True):
         strings = list()
@@ -166,7 +171,7 @@ class CommonHeader(BaseObject):
         # TODO: Calculate property length dynamically?
         # TODO: Is this needed?? Shouldn't need to be edited as it should be calculated dynamically
         # when converting to a .level
-        ret.update({"property_length" : self.property_length})
+        # ret.update({"property_length" : self.property_length})
         if self.guid:
             ret.update({"guid" : self.guid})
         return ret
@@ -212,7 +217,6 @@ class ObjectProperty(BaseObject):
         ret = dict()
         if self.header:
             ret.update({"header" : self.header.to_dict()})
-        # if self.object_:
         try:    # TODO: remove try-except after rewrite
             ret.update(self.object_.to_dict())
         except AttributeError as e:
@@ -424,7 +428,7 @@ class ArrayProperty(BaseObject):
         ret.update({"include_type_header" : self.include_type_header})
         if self.header_data:
             ret.update({"header_data" : self.header_data})
-        ret.update({"byte_count" : self.byte_count})
+        # ret.update({"byte_count" : self.byte_count})
         ret.update({"length" : self.length})
         if self.elements:
             elements = list()
@@ -442,7 +446,8 @@ class ArrayProperty(BaseObject):
         header_data = None
         if "header_data" in dictionary:
             header_data = dictionary["header_data"]
-        byte_count = dictionary["byte_count"]
+        # byte_count = dictionary["byte_count"]
+        byte_count = -1
         length = dictionary["length"]
         elements = []
         if "elements" in dictionary:
@@ -1152,6 +1157,7 @@ class NamedProperty(BaseObject):
 
     def to_dict(self):
         ret = dict()
+        ret.update({"__type" : self.property_type})
         assert self.name
         if self.property_object:
             try:    # TODO: remove try-except after rewrite
@@ -1159,13 +1165,11 @@ class NamedProperty(BaseObject):
             except AttributeError as e:
                 print(f"[!] Named Property {self.name}: {e}")
                 ret.update({"prop" : self.property_object})
-        assert "type" not in ret        # TODO: Make sure we aren't overwritting a value that already exists
-        ret.update({"type" : self.property_type})
         return {self.name : ret}
 
     @classmethod
     def from_dict(cls, name, data):
-        property_type = data.pop("type")
+        property_type = data.pop("__type")
         if property_type in property_string_to_class:
             property_object = property_string_to_class[property_type].from_dict(data)
         elif name == "None":     # TODO: 4 bytes after "None" is a 0 length string
@@ -1337,16 +1341,19 @@ class StructProperty(BaseObject):
         }
 
     def to_dict(self):
-        ret = {
-            "magic" : self.magic,
-            "name" : self.name,
-            "unknown" : self.unknown,
-            "path" : self.path,
-            "uuid" : self.uuid,
-            "byte_count" : self.byte_count,
-            "unknown2" : self.unknown2,
-            "data" : self.data,
-        }
+        ret = {}
+        ret.update({"magic" : self.magic})
+        ret.update({"name" : self.name})
+        ret.update({"unknown" : self.unknown})
+        ret.update({"path" : self.path})
+        if self.uuid:
+            ret.update({"uuid" : self.uuid})
+        # ret.update({"byte_count" : self.byte_count})
+        ret.update({"unknown2" : self.unknown2})
+        if self.name in ["Vector", "Quat", "IntPoint", "Rotator", "LinearColor"]:
+            ret.update(self.data)
+        else:       # Custom struct, not part of core Unreal Engine
+            ret.update({"data" : self.data})
         return ret
 
     @classmethod
@@ -1355,10 +1362,24 @@ class StructProperty(BaseObject):
         name = dictionary["name"]
         unknown = dictionary["unknown"]
         path = dictionary["path"]
-        uuid = dictionary["uuid"]
-        byte_count = dictionary["byte_count"]
+        uuid = ""
+        if "uuid" in dictionary:
+            uuid = dictionary["uuid"]
+        # byte_count = dictionary["byte_count"]
+        byte_count = -1
         unknown2 = dictionary["unknown2"]
-        data = dictionary["data"]
+        if name == "Vector":
+            data = dictionary["vector"]
+        elif name == "Quat":
+            data = dictionary["quat"]
+        elif name == "IntPoint":
+            data = dictionary["intpoint"]
+        elif name == "Rotator":
+            data = dictionary["rotator"]
+        elif name == "LinearColor":
+            data = dictionary["colour"]
+        else:       # Custom struct, not part of core Unreal Engine
+            data = dictionary["data"]
         return cls(magic, name, unknown, path, uuid, byte_count, unknown2, data)
 
     def to_level(writer, data, include_header=True, header_data=None):
@@ -1585,11 +1606,14 @@ class ScriptObject(BaseObject):
             writer.write_data(b'\x00' * 4)
 
 class Episode(object):
-    def __init__(self, scripts):
+    def __init__(self, scripts, cached_strings):
         self.scripts = scripts
+        self.cached_strings = cached_strings
 
     @classmethod
     def from_episode(cls, episode_path):
+        global CACHED_STRINGS
+        assert not CACHED_STRINGS       # TODO: CACHED_STRINGS should be empty??
         scripts = list()
         with open(episode_path, "rb") as f:
             reader = BinaryReader(f)
@@ -1601,7 +1625,9 @@ class Episode(object):
             while reader.stream.peek(1):
                 script = ScriptObject.from_level(reader)
                 scripts.append(script)
-        return cls(scripts)
+        cached_strings = CACHED_STRINGS
+        CACHED_STRINGS = []
+        return cls(scripts, cached_strings)
 
     @classmethod
     def from_json(cls, json_path):
@@ -1614,7 +1640,9 @@ class Episode(object):
         for script_dict in episode["scripts"]:
             script = ScriptObject.from_dict(script_dict)
             scripts.append(script)
-        return cls(scripts)
+        cached_strings = CACHED_STRINGS
+        CACHED_STRINGS = []
+        return cls(scripts, cached_strings)
 
     def from_in_memory(self, bytes_data):
         with io.BytesIO(bytes_data) as buffer:
@@ -1637,7 +1665,7 @@ class Episode(object):
         for script in self.scripts:
             dicts.append(script.to_dict())
         episode = {
-            "cached_strings" : CACHED_STRINGS,
+            "cached_strings" : self.cached_strings,
             "scripts" : dicts,
         }
         with open(json_path, "wb") as f:
@@ -1645,13 +1673,13 @@ class Episode(object):
 
     def to_episode(self, episode_path):
         with open(episode_path, "wb") as f:
-            self.writer = BinaryWriter(f)
+            writer = BinaryWriter(f)
 
             # Unknown what the first 8 bytes are. Always 0
-            self.writer.write_data(b'\x00' * 8)
+            writer.write_data(b'\x00' * 8)
 
             for script in self.episode["episode"]:
-                ScriptObject.to_level(self.writer, script)
+                ScriptObject.to_level(writer, script)
 
     def to_in_memory(self):
         with io.BytesIO() as buffer:
