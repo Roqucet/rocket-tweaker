@@ -10,22 +10,23 @@ usage() {
 
 run_test() {
     FILE=$1
-    EXTRA_ARGS=$2
+    EXTENSION=$2
+    EXTRA_ARGS=$3
     echo -n "  $FILE: "
     SUCCESS=1
     CRASH=0
-    cp "${FILE}" /tmp/test.episode
-    python3 rocket-tweaker.py /tmp/test.episode -o /tmp/test.json $2 &> /dev/null
+    cp "${FILE}" "/tmp/test.${EXTENSION}"
+    python3 rocket-tweaker.py /tmp/test.${EXTENSION} -o /tmp/test.json $EXTRA_ARGS &> /dev/null
     if [ $? != 0 ]; then
         SUCCESS=0
         CRASH=1
     fi
-    python3 rocket-tweaker.py /tmp/test.json -o /tmp/test2.episode $2 &> /dev/null
+    python3 rocket-tweaker.py /tmp/test.json -o /tmp/test2.${EXTENSION} $EXTRA_ARGS &> /dev/null
     if [ $? != 0 ]; then
         SUCCESS=0
         CRASH=1
     fi
-    diff /tmp/test.episode /tmp/test2.episode &> /dev/null
+    diff /tmp/test.${EXTENSION} /tmp/test2.${EXTENSION} &> /dev/null
     if [ $? != 0 ]; then
         SUCCESS=0
     fi
@@ -41,8 +42,8 @@ run_test() {
         fi
     fi
 
-    rm /tmp/test.episode
-    rm /tmp/test2.episode
+    rm /tmp/test.${EXTENSION}
+    rm /tmp/test2.${EXTENSION}
     rm /tmp/test.json
 }
 
@@ -62,31 +63,31 @@ DIR="${1}"
 echo "Running tests on \`.episode\` files:"
 for FILE in "${DIR}"/*.episode; do
     [ -e "${FILE}" ] || continue
-    run_test "${FILE}"
+    run_test "${FILE}" "episode"
 done
 # With no wild card in there's no file name before the `.`
 for FILE in "${DIR}"/.episode; do
     [ -e "${FILE}" ] || continue
-    run_test "${FILE}"
+    run_test "${FILE}" "episode"
 done
 # Loop over subdirectories in case the workshop folder is chosen
 for FILE in "${DIR}"/*/*.episode; do
     [ -e "${FILE}" ] || continue
-    run_test "${FILE}"
+    run_test "${FILE}" "episode"
 done
 # With no wild card in there's no file name before the `.``
 for FILE in "${DIR}"/*/.episode; do
     [ -e "${FILE}" ] || continue
-    run_test "${FILE}"
+    run_test "${FILE}" "episode"
 done
 echo
 echo "Running tests on \`.level\` files:"
 for FILE in "${DIR}"/*.level; do
     [ -e "${FILE}" ] || continue
-    run_test "${FILE}"
+    run_test "${FILE}" "level"
 done
 # Loop over subdirectories in case the workshop folder is chosen
 for FILE in "${DIR}"/*/*.level; do
     [ -e "${FILE}" ] || continue
-    run_test "${FILE}"
+    run_test "${FILE}" "level"
 done
