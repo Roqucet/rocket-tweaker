@@ -199,14 +199,14 @@ class ArrayOfBytes:
         self.data = data
     
     def __repr__(self):
-        return "<" + self.data + ">"
+        return "<" + base64.b64encode(self.data).decode() + ">"
 
     def to_dict(self):
-        return {"data" : self.data}
+        return {"data" : base64.b64encode(self.data).decode()}
     
     @classmethod
     def from_dict(cls, dictionary):
-        return cls(dictionary["data"])
+        return cls(base64.b64decode(dictionary["data"]))
 
 class ArrayProperty(BaseObject):
     def __init__(self, unknown, element_type, include_type_header, header_data, elements):
@@ -238,10 +238,10 @@ class ArrayProperty(BaseObject):
         length = reader.read_u32()      # Don't save length as we always recalculate
 
         elements = []
-        if element_type == "ByteProperty":      # Hacky ByteProperty fix        # TODO: Fix after rewrite
-            # Use the fallback, which works & is expected by NamedProperty to deserialize ActorProperties
-            data = base64.b64encode(reader.read_data(length))
-            elements.append(ArrayOfBytes(data.decode()))
+        if element_type == "ByteProperty":      # Hacky ByteProperty fix
+            # The ByteProperty type is weird and actually reads strings when part of enums
+            # Use ArrayOfBytes instead
+            elements.append(ArrayOfBytes(reader.read_data(length)))
         elif element_type in property_string_to_class:
             element_class = property_string_to_class[element_type]
             if not element_class in TESTED_ARRAY_CLASSES:
@@ -250,7 +250,6 @@ class ArrayProperty(BaseObject):
                 elements.append(element_class.from_level(reader, include_header=False, header_data=header_data))
         else:
             print(f"Unimplemented array property type!: \"{element_type}\"")
-            # -4 because bytes_to_read is the number of bytes from before the length field
             data = base64.b64encode(reader.read_data(length))
             elements.append({"data": data.decode()})
 
@@ -279,9 +278,9 @@ class ArrayProperty(BaseObject):
         header_data = dictionary.get("header_data", None)
         elements = []
         if "elements" in dictionary:
-            if element_type == "ByteProperty":      # Hacky ByteProperty fix        # TODO: Fix after rewrite
-                # Use the fallback, which works & is expected by NamedProperty to deserialize ActorProperties
-                # -4 because bytes_to_read is the number of bytes from before the length field
+            if element_type == "ByteProperty":      # Hacky ByteProperty fix
+                # The ByteProperty type is weird and actually reads strings when part of enums
+                # Use ArrayOfBytes instead
                 elements.append(ArrayOfBytes.from_dict(dictionary["elements"][0]))
             elif element_type in property_string_to_class:
                 element_class = property_string_to_class[element_type]
@@ -291,15 +290,13 @@ class ArrayProperty(BaseObject):
                     elements.append(element_class.from_dict(element, include_header=False))
             else:
                 print(f"Unimplemented array property type!: \"{element_type}\"")
-                # -4 because bytes_to_read is the number of bytes from before the length field
                 data = base64.b64decode(dictionary["elements"][0].encode())
                 elements.append(data)
         return cls(unknown, element_type, include_type_header, header_data, elements)
 
     def to_level(self, writer):
-        if self.element_type == "ByteProperty":
-            # Need to base64 decode the byte array to get the correct length
-            length = len(base64.b64decode(self.elements[0].data))
+        if self.element_type == "ByteProperty":     # Hacky ByteProperty fix
+            length = len(self.elements[0].data)
         else:
             length = len(self.elements)
 
@@ -329,8 +326,7 @@ class ArrayProperty(BaseObject):
         writer.write_u32(length)
 
         if self.element_type == "ByteProperty":      # Hacky ByteProperty fix
-            # Use the fallback, which works & is expected by NamedProperty to deserialize ActorProperties
-            writer.write_data(base64.b64decode(self.elements[0].data))
+            writer.write_data(self.elements[0].data)
         elif self.element_type in property_string_to_class:
             for element in self.elements:
                 element_class = property_string_to_class[self.element_type]
@@ -379,56 +375,82 @@ class BoolProperty(BaseObject):
             self.header.to_level(writer, replace_byte_count=0, optional_guid=False)
         writer.write_u8(self.bool_)
 
-# class ByteProperty(BaseObject):
-#     def from_level(reader, include_header=True):
-#         ret = dict()
-#         if include_header:
-#             header = CommonHeader.from_level(reader)
-#             ret.update({"header": header})
-#         # I don't know why, but bytes are always a string (That probably points to an internal constant)
-#         byte_value = reader.read_string()
-#         ret.update({"byte_value": byte_value,})
-#         return ret
+class ByteProperty(BaseObject):
+    def __init__(self, header, byte):
+        self.header = header
+        self.byte = byte
 
-#     def to_level(self, writer, include_header=True):
-#         byte_value = data["byte_value"]
-#         if include_header:
-#             header_pos = writer.stream.tell()
-#             CommonHeader.to_level(writer, data["header"], replace_byte_count=0x41414141)
-#             byte_count_start = writer.stream.tell()
+    @classmethod
+    def from_level(cls, reader, include_header=True):
+        header = CommonHeader.from_level(reader) if include_header else None
+        # I don't know why, but bytes are always a string (That probably points to an internal constant)
+        byte = reader.read_string()
+        return cls(header, byte)
 
-#         writer.write_string(byte_value)
+    def to_dict(self):
+        ret = {}
+        if self.header:
+            ret.update({"header" : self.header.to_dict()})
+        ret.update({"byte" : self.byte})
+        return ret
 
-#         # Calculate header bytes dynamically
-#         if include_header:
-#             header = data["header"]
-#             current_pos = writer.stream.tell()
-#             writer.stream.seek(header_pos, os.SEEK_SET)
-#             if USE_LENGTHS:
-#                 CommonHeader.to_level(writer, header)
-#             else:
-#                 byte_count = current_pos - byte_count_start
-#                 CommonHeader.to_level(writer, header, replace_byte_count=byte_count)
-#             writer.stream.seek(current_pos, os.SEEK_SET)
+    @classmethod
+    def from_dict(cls, dictionary, include_header=True):
+        header = CommonHeader.create_empty() if include_header else None
+        if "header" in dictionary:
+            header = CommonHeader.from_dict(dictionary["header"])
+        byte = dictionary["byte"]
+        return cls(header, byte)
 
-# class DoubleProperty(BaseObject):
-#     def from_level(reader, include_header=True):
-#         ret = dict()
-#         if include_header:
-#             header = CommonHeader.from_level(reader)
-#             ret.update({"header": header})
-#         double_data = reader.read_f64()
-#         ret.update({"double": double_data,})
-#         return ret
+    def to_level(self, writer, include_header=True):
+        # Basically the same as StrProperty
+        if include_header:
+            # Write the header with a junk byte count to be replaced once the string length is known
+            header_pos = writer.stream.tell()
+            self.header.to_level(writer, replace_byte_count=0x41414141)
+            byte_count_start = writer.stream.tell()
 
-#     def to_level(self, writer, include_header=True):
-#         if include_header:
-#             # Always 8 bytes
-#             CommonHeader.to_level(writer, data["header"], replace_byte_count=8)
-#             double_data = data["double"]
-#         else:
-#             double_data = data
-#         writer.write_f64(double_data)
+        writer.write_string(self.byte)
+
+        if include_header:
+            # Calculate bytes dynamically
+            current_pos = writer.stream.tell()
+            writer.stream.seek(header_pos, os.SEEK_SET)
+            byte_count = current_pos - byte_count_start
+            self.header.to_level(writer, replace_byte_count=byte_count)
+            writer.stream.seek(current_pos, os.SEEK_SET)
+
+class DoubleProperty(BaseObject):
+    def __init__(self, header, double):
+        self.header = header
+        self.double = double
+
+    @classmethod
+    def from_level(cls, reader, include_header=True):
+        header = CommonHeader.from_level(reader) if include_header else None
+        double = reader.read_f64()
+        return cls(header, double)
+
+    def to_dict(self):
+        ret = {}
+        if self.header:
+            ret.update({"header" : self.header.to_dict()})
+        ret.update({"double" : self.double})
+        return ret
+
+    @classmethod
+    def from_dict(cls, dictionary, include_header=True):
+        header = CommonHeader.create_empty() if include_header else None
+        if "header" in dictionary:
+            header = CommonHeader.from_dict(dictionary["header"])
+        double = dictionary["double"]
+        return cls(header, double)
+
+    def to_level(self, writer, include_header=True):
+        if include_header:
+            # Always 8 bytes
+            self.header.to_level(writer, replace_byte_count=8)
+        writer.write_f64(self.double)
 
 # class EnumProperty(BaseObject):
 #     def from_level(reader, include_header=True, header_data=None):
@@ -746,11 +768,6 @@ class MapProperty(BaseObject):
                 #     key = json.loads(key)
                 key.to_level(writer, include_header=False, header_data=self.key_header_data)
                 value.to_level(writer, include_header=False, header_data=self.value_header_data)
-            else:
-                # TODO: Untested
-                # Sanity check
-                assert key == "data"
-                writer.write_data(base64.b64decode(self.map_data[key].encode()))
 
         # Hacky fix for data length
         current_pos = writer.stream.tell()
@@ -780,20 +797,14 @@ class NamedProperty(BaseObject):
             pass
         else:
             print(f"Unimplemented named property type!: @{reader.stream.tell():#2x} \"{property_type}\"")
-            # If type is unknown, assume it uses the common header
-            header = CommonHeader.from_level(reader)
-            data = reader.read_data(header["bytes"]).decode(encoding="unicode_escape")
-            property_data = {
-                "header": header,
-                "data": data,
-            }
-            property_object = property_data     # TODO: Fix me
+            # Exception now that we aren't saving the byte count
+            raise Exception(f"Unimplemented named property type!: @{reader.stream.tell():#2x} \"{property_type}\"")
 
         # Hacky fix to parse the ActorProperties byte array. Needlessly specific (name is sufficient)
         # TODO: make this better later after rewrite
         if False:
-            if name == "ActorProperties" and property_type == "ArrayProperty" and property_data["type"] == "ByteProperty":
-                # Replace the byte array base64 data with the parsed script objects
+            if name == "ActorProperties" and property_type == "ArrayProperty" and property_object.element_type == "ByteProperty":
+                # Replace the ArrayOfBytes object with the parsed script objects
                 # Actor properties use a separate string cache (likely because Talos parses them after the main script)
 
                 # TODO: Hacky (& potentially slow) fix for separate string caches
@@ -804,10 +815,20 @@ class NamedProperty(BaseObject):
                 CACHED_STRINGS = []
                 SOFT_OBJECT_CACHED_STRINGS = []
 
-                actor_prop_bytes = base64.b64decode(property_data["elements"][0]["data"])
-                actor_prop = Episode()
-                actor_prop.from_in_memory(actor_prop_bytes)
-                property_data["elements"][0]["data"] = actor_prop.episode
+                actor_prop_bytes = property_object.elements[0].data
+                scripts = []
+                with io.BytesIO(actor_prop_bytes) as buffer:
+                    buf_reader = io.BufferedReader(buffer)
+                    reader = BinaryReader(buf_reader)
+
+                    # Unknown what the first 8 bytes are. Always 0
+                    reader.read_data(8)
+
+                    # Read scripts until there are no more bytes
+                    while reader.stream.peek(1):
+                        script = ObjectProperty.from_level(reader, include_header=False)
+                        scripts.append(script)
+                property_object.elements = scripts
 
                 CACHED_STRINGS = saved_cache.copy()
                 SOFT_OBJECT_CACHED_STRINGS = saved_soft_cache.copy()
@@ -825,43 +846,24 @@ class NamedProperty(BaseObject):
     @classmethod
     def from_dict(cls, name, data):
         property_type = data.pop("__type")
+
+        # Hacky fix to parse the ActorProperty array as an ObjectProperty. Needlessly specific (name is sufficient)
+        if False:
+            if name == "ActorProperties" and property_type == "ArrayProperty" and data["element_type"] == "ByteProperty":
+                data["element_type"] = "ObjectProperty"
+
         if property_type in property_string_to_class:
             property_object = property_string_to_class[property_type].from_dict(data)
         elif name == "None":     # TODO: 4 bytes after "None" is a 0 length string
             pass
         else:
             print(f"Unimplemented named property type!: \"{property_type}\"")
-            # If type is unknown, assume it uses the common header
-            header = CommonHeader.from_dict(data["header"])
-            data2 = data["data"]
-            property_data = {
-                "header": header,
-                "data": data2,
-            }
-            property_object = property_data     # TODO: Fix me
+            # Exception now that we aren't saving the byte count
+            raise Exception(f"Unimplemented named property type!: \"{property_type}\"")
         
-        # Hacky fix to parse the ActorProperties byte array. Needlessly specific (name is sufficient)
-        # TODO: make this better later after rewrite
-        if False:
-            if name == "ActorProperties" and property_type == "ArrayProperty" and property_data["type"] == "ByteProperty":
-                # Replace the byte array base64 data with the parsed script objects
-                # Actor properties use a separate string cache (likely because Talos parses them after the main script)
-
-                # TODO: Hacky (& potentially slow) fix for separate string caches
-                global CACHED_STRINGS
-                global SOFT_OBJECT_CACHED_STRINGS
-                saved_cache = CACHED_STRINGS.copy()
-                saved_soft_cache = SOFT_OBJECT_CACHED_STRINGS.copy()
-                CACHED_STRINGS = []
-                SOFT_OBJECT_CACHED_STRINGS = []
-
-                actor_prop_bytes = base64.b64decode(property_data["elements"][0]["data"])
-                actor_prop = Episode()
-                actor_prop.from_in_memory(actor_prop_bytes)
-                property_data["elements"][0]["data"] = actor_prop.episode
-
-                CACHED_STRINGS = saved_cache.copy()
-                SOFT_OBJECT_CACHED_STRINGS = saved_soft_cache.copy()
+        # Hacky fix to restore the element type of the ActorProperty array. Needlessly specific (name is sufficient)
+        if name == "ActorProperties" and property_type == "ArrayProperty" and property_object.element_type == "ObjectProperty":
+            property_object.element_type = "ByteProperty"
 
         return cls(name, property_type, property_object)
 
@@ -873,7 +875,7 @@ class NamedProperty(BaseObject):
         # TODO: make this better later after rewrite
         if False:
             if self.name == "ActorProperties" and self.property_type == "ArrayProperty" and self.property_object.element_type == "ByteProperty":
-                # Replace the byte array base64 data with the parsed script objects
+                # Get the bytes of the script objects, then put it in an ArrayOfBytes object
                 # Actor properties use a separate string cache (likely because Talos parses them after the main script)
                 
                 # TODO: Hacky (& potentially slow) fix for separate string caches
@@ -884,11 +886,21 @@ class NamedProperty(BaseObject):
                 CACHED_STRINGS = []
                 SOFT_OBJECT_CACHED_STRINGS = []
                 
-                actor_prop = Episode()
-                actor_prop.episode = self.property_object["elements"][0]["data"]
                 actor_prop_bytes = b''
-                actor_prop_bytes = actor_prop.to_in_memory()
-                self.property_object["elements"][0]["data"] = base64.b64encode(actor_prop_bytes).decode()
+                with io.BytesIO() as buffer:
+                    buf_writer = io.BufferedWriter(buffer)
+                    writer_2 = BinaryWriter(buf_writer)
+
+                    # Unknown what the first 8 bytes are. Always 0
+                    writer_2.write_data(b'\x00' * 8)
+
+                    for script in self.property_object.elements:
+                        script.to_level(writer_2, include_header=False)
+                    
+                    writer_2.stream.flush()
+                    actor_prop_bytes = buffer.getvalue()
+                # TODO: Save a copy & restore self.property_object.elements in case the program continues to execute & modify data after writing to a file 
+                self.property_object.elements = [ArrayOfBytes(actor_prop_bytes)]
 
                 CACHED_STRINGS = saved_cache.copy()
                 SOFT_OBJECT_CACHED_STRINGS = saved_soft_cache.copy()
@@ -897,11 +909,7 @@ class NamedProperty(BaseObject):
             self.property_object.to_level(writer)
         else:
             print(f"Unimplemented named property type!: \"{self.property_type}\"")
-            # If type is unknown, assume it uses the common header
-            # TODO: Does this work?
-            assert False
-            self.property_object["header"].to_level(writer)
-            writer.write_data(self.property_object["data"].encode())
+            raise Exception(f"Unimplemented named property type!: \"{self.property_type}\"")
 
 class ObjectProperty(BaseObject):
     def __init__(self, header, object_):
@@ -953,6 +961,12 @@ class ScriptObject(BaseObject):
         self.cache_index = cache_index
         self.target_actor_index = target_actor_index
         self.named_properties = named_properties
+
+    def get_property(self, name):
+        """Get the property whose name matches the argument"""
+        for prop in self.named_properties:
+            if prop.name == name:
+                return prop
 
     @classmethod
     def from_level(cls, reader):
@@ -1451,98 +1465,158 @@ class StructProperty(BaseObject):
 #                 CommonHeader.to_level(writer, header, replace_byte_count=byte_count)
 #             writer.stream.seek(current_pos, os.SEEK_SET)
 
-class Episode:
-    def __init__(self, scripts, cached_strings):
-        self.scripts = scripts
+# Class for level files
+class Level:
+    def __init__(self, level_script, cached_strings, actor_properties_cached_strings, soft_object_cached_strings):
+        self.level_script = level_script
         self.cached_strings = cached_strings
+        self.actor_properties_cached_strings = actor_properties_cached_strings
+        self.soft_object_cached_strings = soft_object_cached_strings
 
-    @classmethod
-    def from_episode(cls, episode_path):
+    def _actor_properties_fix(level_script):
         global CACHED_STRINGS
-        assert not CACHED_STRINGS       # TODO: CACHED_STRINGS should be empty??
+        global SOFT_OBJECT_CACHED_STRINGS
+        CACHED_STRINGS = []
+        SOFT_OBJECT_CACHED_STRINGS = []
+        # print(level_script.get_property("Scene").property_object.object_.get_property("ActorProperties").property_object.elements[0].data)
+        actor_properties = level_script.get_property("Scene").property_object.object_.get_property("ActorProperties").property_object
+        actor_prop_bytes = actor_properties.elements[0].data
         scripts = []
-        with open(episode_path, "rb") as f:
-            reader = BinaryReader(f)
-
+        with io.BytesIO(actor_prop_bytes) as buffer:
+            buf_reader = io.BufferedReader(buffer)
+            reader = BinaryReader(buf_reader)
             # Unknown what the first 8 bytes are. Always 0
             reader.read_data(8)
-
             # Read scripts until there are no more bytes
             while reader.stream.peek(1):
-                script = ScriptObject.from_level(reader)
+                script = ObjectProperty.from_level(reader, include_header=False)
                 scripts.append(script)
-        cached_strings = CACHED_STRINGS
+        actor_properties.elements = scripts
+
+    @classmethod
+    def from_file(cls, level_path):
+        global CACHED_STRINGS
         CACHED_STRINGS = []
-        return cls(scripts, cached_strings)
+        with open(level_path, "rb") as f:
+            reader = BinaryReader(f)
+            # Unknown what the first 8 bytes are. Always 0
+            reader.read_data(8)
+            level_script = ScriptObject.from_level(reader)
+        cached_strings = CACHED_STRINGS
+
+        # Replace the ActorProperty ArrayOfBytes object with the parsed script objects
+        # Actor properties use a separate string cache (likely because Talos parses them after the main script)
+        # Do it here so we can save the actor property cached strings separately
+        cls._actor_properties_fix(level_script)
+        actor_properties_cached_strings = CACHED_STRINGS
+        soft_object_cached_strings = SOFT_OBJECT_CACHED_STRINGS
+        return cls(level_script, cached_strings, actor_properties_cached_strings, soft_object_cached_strings)
 
     @classmethod
     def from_json(cls, json_path):
         global CACHED_STRINGS
-        assert not CACHED_STRINGS       # TODO: CACHED_STRINGS should be empty??
+        global SOFT_OBJECT_CACHED_STRINGS
+        with open(json_path, "rb") as f:
+            level = json.loads(f.read())
+
+        # Parse the ActorProperty array to an ArrayOfBytes object to correctly read the JSON
+        CACHED_STRINGS = level["actor_properties_cached_strings"]
+        SOFT_OBJECT_CACHED_STRINGS = level["soft_object_cached_strings"]
+        # Save the parsed actor properties so we don't need to re-parse them
+        actor_properties = level["level_script"]["named_properties"]["Scene"]["named_properties"]["ActorProperties"]
+        actor_properties_scripts = []
+        for script in actor_properties["elements"]:
+            actor_properties_scripts.append(ObjectProperty.from_dict(script, include_header=False))
+
+        actor_prop_bytes = b''
+        with io.BytesIO() as buffer:
+            buf_writer = io.BufferedWriter(buffer)
+            writer_2 = BinaryWriter(buf_writer)
+            # Unknown what the first 8 bytes are. Always 0
+            writer_2.write_data(b'\x00' * 8)
+            for script in actor_properties_scripts:
+                script.to_level(writer_2, include_header=False)
+            writer_2.stream.flush()
+            actor_prop_bytes = buffer.getvalue()
+        actor_properties["elements"] = [{"data" : base64.b64encode(actor_prop_bytes).decode()}]
+
+        CACHED_STRINGS = level["cached_strings"]
+        level_script = ScriptObject.from_dict(level["level_script"])
+        cached_strings = CACHED_STRINGS
+        actor_properties_cached_strings = CACHED_STRINGS
+        soft_object_cached_strings = SOFT_OBJECT_CACHED_STRINGS
+
+        # Restore the parsed actor properties so we don't need to re-parse them
+        actor_properties = level_script.get_property("Scene").property_object.object_.get_property("ActorProperties").property_object
+        actor_properties.elements = actor_properties_scripts
+
+        return cls(level_script, cached_strings, actor_properties_cached_strings, soft_object_cached_strings)
+
+    def to_json(self, json_path):
+        level = {
+            "cached_strings" : self.cached_strings,
+            "actor_properties_cached_strings" : self.actor_properties_cached_strings,
+            "soft_object_cached_strings" : self.soft_object_cached_strings,
+            "level_script" : self.level_script.to_dict(),
+        }
+        with open(json_path, "wb") as f:
+            f.write(json.dumps(level, indent=2).encode())
+
+    def to_file(self, level_path):
+        # TODO:
+        # Convert the ActorProperty array to an ArrayOfBytes object to correctly write the level
+        # Do it here so we can save the actor property cached strings separately
+
+        with open(level_path, "wb") as f:
+            writer = BinaryWriter(f)
+            # Unknown what the first 8 bytes are. Always 0
+            writer.write_data(b'\x00' * 8)
+            self.level_script.to_level(writer)
+
+# Class for episode files
+class Episode:
+    def __init__(self, episode_script, cached_strings):
+        self.episode_script = episode_script
+        self.cached_strings = cached_strings
+
+    @classmethod
+    def from_file(cls, episode_path):
+        global CACHED_STRINGS
+        CACHED_STRINGS = []
+        with open(episode_path, "rb") as f:
+            reader = BinaryReader(f)
+            # Unknown what the first 8 bytes are. Always 0
+            reader.read_data(8)
+            episode_script = ScriptObject.from_level(reader)
+        cached_strings = CACHED_STRINGS
+        return cls(episode_script, cached_strings)
+
+    @classmethod
+    def from_json(cls, json_path):
+        global CACHED_STRINGS
+        CACHED_STRINGS = []
         with open(json_path, "rb") as f:
             episode = json.loads(f.read())
         CACHED_STRINGS = episode["cached_strings"]
-        scripts = []
-        for script_dict in episode["scripts"]:
-            script = ScriptObject.from_dict(script_dict)
-            scripts.append(script)
+        episode_script = ScriptObject.from_dict(episode["episode_script"])
         cached_strings = CACHED_STRINGS
-        CACHED_STRINGS = []
-        return cls(scripts, cached_strings)
-
-    def from_in_memory(self, bytes_data):
-        with io.BytesIO(bytes_data) as buffer:
-            buf_reader = io.BufferedReader(buffer)
-            self.reader = BinaryReader(buf_reader)
-
-            # Unknown what the first 8 bytes are. Always 0
-            self.reader.read_data(8)
-
-            scripts = []
-            # Read scripts until there are no more bytes
-            while self.reader.stream.peek(1):
-                script = ScriptObject.from_level(self.reader)
-                scripts.append(script)
-
-            self.episode["episode"] = scripts
+        return cls(episode_script, cached_strings)
 
     def to_json(self, json_path):
-        dicts = []
-        for script in self.scripts:
-            dicts.append(script.to_dict())
         episode = {
             "cached_strings" : self.cached_strings,
-            "scripts" : dicts,
+            "episode_script" : self.episode_script.to_dict(),
         }
         with open(json_path, "wb") as f:
             f.write(json.dumps(episode, indent=2).encode())
 
-    def to_episode(self, episode_path):
+    def to_file(self, episode_path):
         with open(episode_path, "wb") as f:
             writer = BinaryWriter(f)
-
             # Unknown what the first 8 bytes are. Always 0
             writer.write_data(b'\x00' * 8)
+            self.episode_script.to_level(writer)
 
-            for script in self.scripts:
-                script.to_level(writer)
-
-    def to_in_memory(self):
-        with io.BytesIO() as buffer:
-            buf_writer = io.BufferedWriter(buffer)
-            self.writer = BinaryWriter(buf_writer)
-
-            # Unknown what the first 8 bytes are. Always 0
-            self.writer.write_data(b'\x00' * 8)
-
-            for script in self.episode["episode"]:
-                ScriptObject.to_level(self.writer, script)
-            
-            self.writer.stream.flush()
-            return buffer.getvalue()
-
-    def dump(self):
-        print(json.dumps(self.episode, indent=2))
 
 # List of classes that I have tested with array
 # New classes may have issues with headers
@@ -1558,10 +1632,10 @@ TESTED_ARRAY_CLASSES = [
 property_string_to_class = {
         "ArrayProperty": ArrayProperty,
         "BoolProperty": BoolProperty,
-        # "ByteProperty": ByteProperty,
+        "ByteProperty": ByteProperty,
         # "EnumProperty": EnumProperty,
         "FloatProperty": FloatProperty,
-        # "DoubleProperty": DoubleProperty,
+        "DoubleProperty": DoubleProperty,
         "IntProperty": IntProperty,
         "MapProperty": MapProperty,
         "ObjectProperty": ObjectProperty,
@@ -1571,6 +1645,11 @@ property_string_to_class = {
         "StructProperty": StructProperty,
         # "TextProperty": TextProperty,
     }
+
+file_classes = {
+    "episode": Episode,
+    "level": Level,
+}
 
 # TODO: Parse the actor properties
 def main():
@@ -1613,6 +1692,11 @@ def main():
 
     convert_type = "from_json" if input_path.endswith(".json") else "to_json"
 
+    # TODO: Determine the file type ...
+    # If converting to json (output is .json), take the input_path extension
+    # Else (input is .json), use the file_type value in the json
+    file_type = "level"
+
     # If reading from writing to JSON, verify the input file exists
     if convert_type == "to_json":
         if not os.path.exists(input_path):
@@ -1641,12 +1725,14 @@ def main():
     print(f"Input: {input_path}")
     print(f"Output: {output_path}")
 
+    file_class = file_classes[file_type]
+
     if convert_type == "from_json":
-        e = Episode.from_json(input_path)
+        e = file_class.from_json(input_path)
         # print(e.scripts)
-        e.to_episode(output_path)
+        # e.to_file(output_path)
     elif convert_type == "to_json":
-        e = Episode.from_episode(input_path)
+        e = file_class.from_file(input_path)
         # print(e.scripts)
         e.to_json(output_path)
 
