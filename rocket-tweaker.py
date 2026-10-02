@@ -483,7 +483,7 @@ class EnumProperty(BaseObject):
         else:
             print(f"Unimplemented enum type!: @{reader.stream.tell():#2x} \"{enum_type}\"")
             # Exception now that we aren't saving the byte count
-            raise Exception(f"Unimplemented enum type!: @{reader.stream.tell():#2x} \"{enum_type}\"")
+            raise NotImplementedError(f"Unimplemented enum type!: @{reader.stream.tell():#2x} \"{enum_type}\"")
 
         return cls(non_zero_unknown1, string1, non_zero_unknown2, string2, enum_type, enum_data)
 
@@ -679,7 +679,7 @@ class MapProperty(BaseObject):
         else:
             print(f"Unimplemented map type(s)!: @{reader.stream.tell():#2x} \"{key_type}\" || \"{value_type}\"")
             # Exception now that we aren't saving the byte count
-            raise Exception(f"Unimplemented map type(s)!: @{reader.stream.tell():#2x} \"{key_type}\" || \"{value_type}\"")
+            raise NotImplementedError(f"Unimplemented map type(s)!: @{reader.stream.tell():#2x} \"{key_type}\" || \"{value_type}\"")
 
         return cls(non_zero_unknown, key_type, include_key_header, key_header_data, value_type, include_value_header, value_header_data, non_zero_unknown2, map_data)
 
@@ -801,7 +801,7 @@ class NamedProperty(BaseObject):
         else:
             print(f"Unimplemented named property type!: @{reader.stream.tell():#2x} \"{property_type}\"")
             # Exception now that we aren't saving the byte count
-            raise Exception(f"Unimplemented named property type!: @{reader.stream.tell():#2x} \"{property_type}\"")
+            raise NotImplementedError(f"Unimplemented named property type!: @{reader.stream.tell():#2x} \"{property_type}\"")
         return cls(name, property_type, property_object)
 
     def to_dict(self):
@@ -822,7 +822,7 @@ class NamedProperty(BaseObject):
         else:
             print(f"Unimplemented named property type!: \"{property_type}\"")
             # Exception now that we aren't saving the byte count
-            raise Exception(f"Unimplemented named property type!: \"{property_type}\"")
+            raise NotImplementedError(f"Unimplemented named property type!: \"{property_type}\"")
         return cls(name, property_type, property_object)
 
     def unparse(self, writer):
@@ -832,7 +832,7 @@ class NamedProperty(BaseObject):
             self.property_object.unparse(writer)
         else:
             print(f"Unimplemented named property type!: \"{self.property_type}\"")
-            raise Exception(f"Unimplemented named property type!: \"{self.property_type}\"")
+            raise NotImplementedError(f"Unimplemented named property type!: \"{self.property_type}\"")
 
 class ObjectProperty(BaseObject):
     def __init__(self, header, object_):
@@ -1638,13 +1638,7 @@ file_classes = {
     "level": Level,
 }
 
-# TODO: Parse the actor properties
 def main():
-    # Check python version since we make use of ordered dictionaries which are standard in 3.7+
-    # Ordered dictionaries are to ensure element order is preseved (which might not matter to unreal)
-    if sys.version_info[0] < 3 or sys.version_info[1] < 7:
-        raise Exception("Must be using Python 3.7 or newer")
-
     parser = argparse.ArgumentParser(
                         description="A tool for converting The Talos Principle: Reawakened `.level` & `.episode` files used in custom campaigns to and from JSON for easier editing. Lets you dump a file to .json for manual editing, or create a .level/.episode from .json. Will save a backup when trying to overwrite a file",)
     parser.add_argument("input_file", help="/path/to/input. File extension determins conversion type - `.episode/.level` -> `.json` | `.json` -> `.level`")
@@ -1682,29 +1676,29 @@ def main():
     # TODO: Determine the file type ...
     # If converting to json (output is .json), take the input_path extension
     # Else (input is .json), use the file_type value in the json
-    file_type = "level"
+    file_type = "episode"
 
     # If reading from writing to JSON, verify the input file exists
     if convert_type == "to_json":
         if not os.path.exists(input_path):
             print(f"Input file doesn't exist: \"{input_path}\"")
-            exit(1)
+            sys.exit(1)
         if not os.path.isfile(input_path):
             print(f"Not a file: \"{input_path}\"")
-            exit(1)
+            sys.exit(1)
 
     # If reading from JSON, verify the JSON file exists
     if convert_type == "from_json":
         if not os.path.exists(input_path):
             print(f"JSON file doesn't exist: \"{input_path}\"")
-            exit(1)
+            sys.exit(1)
         if not os.path.isfile(input_path):
             print(f"Not a JSON file: \"{input_path}\"")
-            exit(1)
+            sys.exit(1)
         
         # If writing to .episode/.level, save a backup
         if os.path.exists(output_path):
-            time_string = datetime.now().strftime("%Y.%m.%d-%H.%M.%S")
+            time_string = datetime.now(datetime.timetz()).strftime("%Y.%m.%d-%H.%M.%S")
             backup_path = output_path + "." + time_string +  ".bak"
             print(f"Saving backup to: \"{backup_path}\"")
             shutil.copy(output_path, backup_path)
