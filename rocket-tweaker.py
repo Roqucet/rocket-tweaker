@@ -1422,19 +1422,19 @@ class StructProperty(BaseObject):
 
         if struct_name == "Vector":
             vector = struct.unpack("<3d", reader.read_data(8 * 3))
-            data = {"vector": vector}
+            data = list(vector)
         elif struct_name == "Quat":
             quat = struct.unpack("<4d", reader.read_data(8 * 4))
-            data = {"quat": quat}
+            data = list(quat)
         elif struct_name == "IntPoint":
             intpoint = struct.unpack("<2i", reader.read_data(4 * 2))
-            data = {"intpoint": intpoint}
+            data = list(intpoint)
         elif struct_name == "Rotator":
             rotator = struct.unpack("<3d", reader.read_data(8 * 3))
-            data = {"rotator": rotator}
+            data = list(rotator)
         elif struct_name == "LinearColor":
             colour = struct.unpack("<4f", reader.read_data(4 * 4))
-            data = {"colour": colour}
+            data = list(colour)
         else:  # Custom struct, not part of core Unreal Engine
             if path == "/Script/CoreUObject" and struct_name != "Transform":
                 # Transform is special as it is comprised of 1-3 structs
@@ -1498,7 +1498,7 @@ class StructProperty(BaseObject):
         if self.unknown2:
             ret.update({"unknown2": self.unknown2})
         if self.struct_name in ["Vector", "Quat", "IntPoint", "Rotator", "LinearColor"]:
-            ret.update(self.data)
+            ret.update({self.struct_name: self.data})
         else:  # Custom struct, not part of core Unreal Engine
             named_properties = {}
             for prop in self.data:
@@ -1518,15 +1518,15 @@ class StructProperty(BaseObject):
             "unknown2", None
         )  # If it doesn't exist, it shouldn't get written
         if struct_name == "Vector":
-            data = dictionary["vector"]
+            data = dictionary["Vector"]
         elif struct_name == "Quat":
-            data = dictionary["quat"]
+            data = dictionary["Quat"]
         elif struct_name == "IntPoint":
-            data = dictionary["intpoint"]
+            data = dictionary["IntPoint"]
         elif struct_name == "Rotator":
-            data = dictionary["rotator"]
+            data = dictionary["Rotator"]
         elif struct_name == "LinearColor":
-            data = dictionary["colour"]
+            data = dictionary["LinearColor"]
         else:  # Custom struct, not part of core Unreal Engine
             named_properties = []
             for name, data in dictionary["data"].items():
@@ -1684,6 +1684,9 @@ class Level:
         self.actor_properties_cached_strings = actor_properties_cached_strings
         self.soft_object_cached_strings = soft_object_cached_strings
 
+    def __repr__(self):
+        return f"{self.level_script}"
+
     def _actor_properties_fix(level_script):
         global CACHED_STRINGS
         global SOFT_OBJECT_CACHED_STRINGS
@@ -1734,12 +1737,10 @@ class Level:
         )
 
     @classmethod
-    def from_json(cls, json_path):
+    def from_dict(cls, dictionary):
         global CACHED_STRINGS
         global SOFT_OBJECT_CACHED_STRINGS
-        with open(json_path, "rb") as f:
-            level = json.loads(f.read())
-
+        level = dictionary
         # Parse the ActorProperty array to an ArrayOfBytes object to correctly read the JSON
         CACHED_STRINGS = level["actor_properties_cached_strings"]
         SOFT_OBJECT_CACHED_STRINGS = level["soft_object_cached_strings"]
@@ -1846,6 +1847,9 @@ class Episode:
         self.episode_script = episode_script
         self.cached_strings = cached_strings
 
+    def __repr__(self):
+        return f"{self.episode_script}"
+
     @classmethod
     def from_file(cls, episode_path):
         global CACHED_STRINGS
@@ -1859,11 +1863,10 @@ class Episode:
         return cls(episode_script, cached_strings)
 
     @classmethod
-    def from_json(cls, json_path):
+    def from_dict(cls, dictionary):
         global CACHED_STRINGS
         CACHED_STRINGS = []
-        with open(json_path, "rb") as f:
-            episode = json.loads(f.read())
+        episode = dictionary
         CACHED_STRINGS = episode["cached_strings"]
         episode_script = ScriptObject.from_dict(episode["episode_script"])
         cached_strings = CACHED_STRINGS
@@ -1963,11 +1966,6 @@ def main():
 
     convert_type = "from_json" if input_path.endswith(".json") else "to_json"
 
-    # TODO: Determine the file type ...
-    # If converting to json (output is .json), take the input_path extension
-    # Else (input is .json), use the file_type value in the json
-    file_type = "episode"
-
     # If reading from writing to JSON, verify the input file exists
     if convert_type == "to_json":
         if not os.path.exists(input_path):
@@ -1986,9 +1984,9 @@ def main():
             print(f'Not a JSON file: "{input_path}"')
             sys.exit(1)
 
-        # If writing to .episode/.level, save a backup
+        # If writing to .episode/.level, save a backup. Some date/time format as talos logs
         if os.path.exists(output_path):
-            time_string = datetime.now(datetime.timetz()).strftime("%Y.%m.%d-%H.%M.%S")
+            time_string = datetime.now(datetime.now().astimezone().tzinfo).strftime("%Y.%m.%d-%H.%M.%S")
             backup_path = output_path + "." + time_string + ".bak"
             print(f'Saving backup to: "{backup_path}"')
             shutil.copy(output_path, backup_path)
@@ -1996,15 +1994,25 @@ def main():
     print(f"Input: {input_path}")
     print(f"Output: {output_path}")
 
-    file_class = file_classes[file_type]
-
     if convert_type == "from_json":
-        e = file_class.from_json(input_path)
-        e.to_file(output_path)
-    elif convert_type == "to_json":
-        e = file_class.from_file(input_path)
-        e.to_json(output_path)
+        # Load the json to determine the output file type
+        with open(input_path, "rb") as f:
+            file_data = json.loads(f.read())
 
+        if "level_script" in file_data:
+            file = Level.from_dict(file_data)
+        elif "episode_script" in file_data:
+            file = Episode.from_dict(file_data)
+        else:
+            print("Unknown JSON file")
+        file.to_file(output_path)
+    elif convert_type == "to_json":
+        # If converting to json (output is .json), take the input_path extension
+        _, file_type = input_path.rsplit(".", 1)
+        file_class = file_classes[file_type]
+
+        file = file_class.from_file(input_path)
+        file.to_json(output_path)
 
 if __name__ == "__main__":
     main()
