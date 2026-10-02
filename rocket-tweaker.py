@@ -758,7 +758,6 @@ class MapProperty(BaseObject):
                     f'Warning! Untested map element types "{key_type}" & "{value_type}". Potential for incorrect parsing / crash'
                 )
             for _ in range(count):
-                # TODO: Don't modify key/value types to make json.dumps happy, instead fix them in the to_dict method so the values are editable
                 key = key_class.parse(
                     reader, include_header=False, header_data=key_header_data
                 )
@@ -943,14 +942,14 @@ class NamedProperty(BaseObject):
     def parse(cls, reader):
         name = reader.read_string()
         if name == "None":
+            # 4 bytes after "None" is a 0 length string
+            # Maybe introduce a "NoneProperty" to standadise reading/writing this string?
             reader.read_data(4)
             return None
 
         property_type = reader.read_string()
         if property_type in property_string_to_class:
             property_object = property_string_to_class[property_type].parse(reader)
-        elif name == "None":  # TODO: 4 bytes after "None" is a 0 length string
-            pass
         else:
             print(
                 f'Unimplemented named property type!: @{reader.stream.tell():#2x} "{property_type}"'
@@ -974,7 +973,7 @@ class NamedProperty(BaseObject):
         property_type = data.pop("__type")
         if property_type in property_string_to_class:
             property_object = property_string_to_class[property_type].from_dict(data)
-        elif name == "None":  # TODO: 4 bytes after "None" is a 0 length string
+        elif name == "None":
             pass
         else:
             print(f'Unimplemented named property type!: "{property_type}"')
