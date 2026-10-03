@@ -25,7 +25,7 @@ from enum import IntEnum
 # Allows for loading multiple files in the same script
 CACHED_STRINGS = []
 SOFT_OBJECT_CACHED_STRINGS = []
-
+DATABASE_CACHED_STRING = []
 
 class GameVersion(IntEnum):
     Unknown = -1
@@ -579,7 +579,8 @@ class BoolProperty(BaseObject):
             CommonHeader.parse(reader, optional_guid=False) if include_header else None
         )
         bool_ = reader.read_u8()
-        reader.read_u8()  # Random extra byte in Talos 2?
+        if include_header:
+            reader.read_u8()  # Random extra byte in Talos 2?
         return cls(header, bool_)
 
     @classmethod
@@ -617,7 +618,8 @@ class BoolProperty(BaseObject):
             # Always 0 bytes
             self.header.unparse(writer, 0, optional_guid=False)
         writer.write_u8(self.bool_)
-        writer.write_u8(0)  # Random extra byte TODO: Maybe save
+        if include_header:
+            writer.write_u8(0)  # Random extra byte TODO: Maybe save
 
     def unparse(self, writer, include_header=True, header_data=None):
         if GAME_VERSION == GameVersion.Reawakened:
@@ -717,7 +719,7 @@ class EnumProperty(BaseObject):
         self.enum_data = enum_data
 
     @classmethod
-    def parse(cls, reader, include_header=True, header_data=None):
+    def _parseR(cls, reader, include_header=True, header_data=None):
         if include_header:
             non_zero_unknown1 = reader.read_data(4).decode(
                 encoding="unicode_escape"
@@ -755,6 +757,28 @@ class EnumProperty(BaseObject):
             non_zero_unknown1, string1, non_zero_unknown2, string2, enum_type, enum_data
         )
 
+    @classmethod
+    def _parseT2(cls, reader, include_header=True, header_data=None):
+        reader.read_u32()  # Byte count - Ignore as we always recalculate
+        non_zero_unknown1 = reader.read_data(4).decode(
+            encoding="unicode_escape"
+        )  # Unknown
+        string1 = reader.read_string()
+        non_zero_unknown2 = reader.read_data(1).decode(
+            encoding="unicode_escape"
+        )  # Unknown
+        string2 = reader.read_string()
+        return cls(non_zero_unknown1, string1, non_zero_unknown2, string2, None, None)
+
+    @classmethod
+    def parse(cls, reader, include_header=True, header_data=None):
+        if GAME_VERSION == GameVersion.Reawakened:
+            return cls._parseR(reader, include_header, header_data)
+        elif GAME_VERSION == GameVersion.Talos2:
+            return cls._parseT2(reader, include_header, header_data)
+        else:
+            raise NotImplementedError("Unknown game version")
+
     def parse_separate_header(reader):
         string1 = reader.read_string()
         non_zero_unknown2 = reader.read_data(4).decode(
@@ -782,8 +806,10 @@ class EnumProperty(BaseObject):
             ret.update({"unknown2": self.unknown2})
         if self.string2:
             ret.update({"string2": self.string2})
-        ret.update({"enum_type": self.enum_type})
-        ret.update({"enum_data": self.enum_data.to_dict()})
+        if self.enum_type:
+            ret.update({"enum_type": self.enum_type})
+        if self.enum_data:
+            ret.update({"enum_data": self.enum_data.to_dict()})
         return ret
 
     @classmethod
@@ -792,14 +818,15 @@ class EnumProperty(BaseObject):
         string1 = dictionary.get("string1", "")
         unknown2 = dictionary.get("unknown2", "")
         string2 = dictionary.get("string2", "")
-        enum_type = dictionary["enum_type"]
+        enum_type = dictionary.get("enum_type", None)
+        enum_data = None
         if enum_type in property_string_to_class:
             enum_data = property_string_to_class[enum_type].from_dict(
                 dictionary["enum_data"], include_header=include_header
             )
         return cls(unknown, string1, unknown2, string2, enum_type, enum_data)
 
-    def unparse(self, writer, include_header=True, header_data=None):
+    def _unparseR(self, writer, include_header=True, header_data=None):
         if include_header:
             writer.write_data(self.unknown.encode())
             writer.write_string(self.string1)
@@ -809,8 +836,34 @@ class EnumProperty(BaseObject):
             writer.write_string(self.enum_type)
 
         if self.enum_type in property_string_to_class:
-            # property_string_to_class[self.enum_type].unparse(writer, self.enum_type, include_header=include_header)
             self.enum_data.unparse(writer, include_header=include_header)
+
+    def _unparseT2(self, writer, include_header=True, header_data=None):
+        # Calculate bytes dynamically
+        byte_count_pos = writer.stream.tell()
+        writer.write_u32(0x41414141)
+
+        writer.write_data(self.unknown.encode())
+        writer.write_string(self.string1)
+        writer.write_data(self.unknown2.encode())
+
+        byte_count_start = writer.stream.tell()
+        writer.write_string(self.string2)
+
+        # Fix for unknown data length
+        current_pos = writer.stream.tell()
+        writer.stream.seek(byte_count_pos, os.SEEK_SET)
+        byte_count = current_pos - byte_count_start
+        writer.write_u32(byte_count)
+        writer.stream.seek(current_pos, os.SEEK_SET)
+
+    def unparse(self, writer, include_header=True, header_data=None):
+        if GAME_VERSION == GameVersion.Reawakened:
+            return self._unparseR(writer, include_header, header_data)
+        elif GAME_VERSION == GameVersion.Talos2:
+            return self._unparseT2(writer, include_header, header_data)
+        else:
+            raise NotImplementedError("Unknown game version")
 
     def unparse_separate_header(writer, header_data):
         string1 = header_data["string1"]
@@ -1343,7 +1396,7 @@ class NamedProperty(BaseObject):
 
     @classmethod
     def parse(cls, reader):
-        print(f"Named Property @ {reader.stream.tell():#2x}")
+        # print(f"Named Property @ {reader.stream.tell():#2x}")
         name = reader.read_string()
         if name == "None":
             # 4 bytes after "None" is a 0 length string
@@ -1446,8 +1499,10 @@ class ObjectUserContentTypes(IntEnum):
     Unknown = -1
     TargetActor = 0x03
     CachedPath = 0x04
+    CachedMaterialPath = 0x06
     AssetPath = 0x07
     UncachedPath = 0x08
+    MaterialReference = 0x09
 
 
 class ScriptObject(BaseObject):
@@ -1455,16 +1510,26 @@ class ScriptObject(BaseObject):
         self,
         special,
         user_content_type,
-        object_path,
-        cache_index,
-        target_actor_index,
+        user_content_args,
         named_properties,
     ):
         self.special = special
         self.user_content_type = user_content_type
-        self.object_path = object_path
-        self.cache_index = cache_index
-        self.target_actor_index = target_actor_index
+        if user_content_type == ObjectUserContentTypes.UncachedPath:
+            self.object_path = user_content_args["object_path"]
+        elif user_content_type == ObjectUserContentTypes.AssetPath:
+            self.asset_path = user_content_args["asset_path"]
+        elif user_content_type == ObjectUserContentTypes.CachedPath:
+            self.cache_index = user_content_args["cache_index"]
+        elif user_content_type == ObjectUserContentTypes.TargetActor:
+            self.target_actor_index = user_content_args["target_actor_index"]
+        elif user_content_type == ObjectUserContentTypes.MaterialReference:
+            self.database_path = user_content_args["database_path"]
+            self.database_index = user_content_args["database_index"]
+        elif user_content_type == ObjectUserContentTypes.CachedMaterialPath:
+            self.database_cache_index = user_content_args["database_cache_index"]
+            self.database_index = user_content_args["database_index"]
+
         self.named_properties = named_properties
 
     def get_property(self, name):
@@ -1478,27 +1543,45 @@ class ScriptObject(BaseObject):
         special = reader.read_u8()
         if special == 0:
             # Object ends
-            return cls(special, None, None, None, None, None)
+            return cls(special, None, None, None)
         if special == 0x02:
             user_content_type = ObjectUserContentTypes(reader.read_u8())
         else:
             user_content_type = ObjectUserContentTypes(special)
 
-        object_path = ""
-        cache_index = -1
-        target_actor_index = -1
+        user_content_args = {}
         if user_content_type == ObjectUserContentTypes.UncachedPath:
             object_path = reader.read_string()
             CACHED_STRINGS.append(object_path)
+            user_content_args.update({"object_path": object_path})
         elif user_content_type == ObjectUserContentTypes.AssetPath:
             # TODO: Unsure if this gets cached (or even uses the same cache)
-            object_path = reader.read_string()
+            asset_path = reader.read_string()
+            user_content_args.update({"asset_path": asset_path})
         elif user_content_type == ObjectUserContentTypes.CachedPath:
             cache_index = reader.read_u32()
+            user_content_args.update({"cache_index": cache_index})
         elif user_content_type == ObjectUserContentTypes.TargetActor:
             target_actor_index = reader.read_u32()
+            user_content_args.update({"target_actor_index": target_actor_index})
+        elif user_content_type == ObjectUserContentTypes.MaterialReference:
+            database_path = reader.read_string()
+            database_index = reader.read_s32()
+            DATABASE_CACHED_STRING.append(database_path)
+            user_content_args.update({"database_path": database_path})
+            user_content_args.update({"database_index": database_index})
+        elif user_content_type == ObjectUserContentTypes.CachedMaterialPath:
+            database_cache_index = reader.read_s32()
+            database_index = reader.read_s32()
+            # print(f"Cached material database: {CACHED_STRINGS}")
+            # print(f"Cached material database: {DATABASE_CACHED_STRING}")
+            user_content_args.update({"database_cache_index": database_cache_index})
+            user_content_args.update({"database_index": database_index})
         else:
             print(f"Unimplemented user content type: {user_content_type:#2x}")
+            raise NotImplementedError(
+                f"Unimplemented user content type: {user_content_type:#2x}"
+            )
 
         # Extra null byte padding when `special` == 0x2 only exists in Reawakened
         # Otherwise it is the least significant byte from the length of a peroperty name for the
@@ -1525,7 +1608,14 @@ class ScriptObject(BaseObject):
                 if prop == None:
                     break
                 named_properties.append(prop)
-        elif special == 0x08 or special == 0x07 or special == 0x04 or special == 0x03:
+        elif (
+            special == 0x09
+            or special == 0x08
+            or special == 0x07
+            or special == 0x06
+            or special == 0x04
+            or special == 0x03
+        ):
             # No named properties
             pass
         else:
@@ -1534,9 +1624,7 @@ class ScriptObject(BaseObject):
         return cls(
             special,
             user_content_type,
-            object_path,
-            cache_index,
-            target_actor_index,
+            user_content_args,
             named_properties,
         )
 
@@ -1544,12 +1632,20 @@ class ScriptObject(BaseObject):
         ret = {}
         ret.update({"special": self.special})
         ret.update({"user_content_type": self.user_content_type})
-        if self.object_path:
+        if hasattr(self, "object_path"):
             ret.update({"object_path": self.object_path})
-        if self.cache_index != -1:
+        if hasattr(self,"asset_path"):
+            ret.update({"asset_path": self.asset_path})
+        if hasattr(self,"cache_index"):
             ret.update({"cache_index": self.cache_index})
-        if self.target_actor_index != -1:
+        if hasattr(self,"target_actor_index"):
             ret.update({"target_actor_index": self.target_actor_index})
+        if hasattr(self,"database_path"):
+            ret.update({"database_path": self.database_path})
+        if hasattr(self,"database_cache_index"):
+            ret.update({"database_cache_index": self.database_cache_index})
+        if hasattr(self,"database_index"):
+            ret.update({"database_index": self.database_index})
         if self.named_properties:
             named_properties = {}
             for prop in self.named_properties:
@@ -1561,9 +1657,22 @@ class ScriptObject(BaseObject):
     def from_dict(cls, dictionary):
         special = dictionary["special"]
         user_content_type = dictionary["user_content_type"]
-        object_path = dictionary.get("object_path", "")
-        cache_index = dictionary.get("cache_index", -1)
-        target_actor_index = dictionary.get("target_actor_index", -1)
+        user_content_args = {}
+        if user_content_type == ObjectUserContentTypes.UncachedPath:
+            user_content_args.update({"object_path": dictionary["object_path"]})
+        elif user_content_type == ObjectUserContentTypes.AssetPath:
+            user_content_args.update({"asset_path": dictionary["asset_path"]})
+        elif user_content_type == ObjectUserContentTypes.CachedPath:
+            user_content_args.update({"cache_index": dictionary["cache_index"]})
+        elif user_content_type == ObjectUserContentTypes.TargetActor:
+            user_content_args.update({"target_actor_index": dictionary["target_actor_index"]})
+        elif user_content_type == ObjectUserContentTypes.MaterialReference:
+            user_content_args.update({"database_path": dictionary["database_path"]})
+            user_content_args.update({"database_index": dictionary["database_index"]})
+        elif user_content_type == ObjectUserContentTypes.CachedMaterialPath:
+            user_content_args.update({"database_cache_index": dictionary["database_cache_index"]})
+            user_content_args.update({"database_index": dictionary["database_index"]})
+
         named_properties = []
         properties = dictionary.get("named_properties", {})
         for name, data in properties.items():
@@ -1572,9 +1681,7 @@ class ScriptObject(BaseObject):
         return cls(
             special,
             user_content_type,
-            object_path,
-            cache_index,
-            target_actor_index,
+            user_content_args,
             named_properties,
         )
 
@@ -1587,15 +1694,20 @@ class ScriptObject(BaseObject):
         if self.special == 0x2:
             writer.write_u8(self.user_content_type)
 
-        if (
-            self.user_content_type == ObjectUserContentTypes.UncachedPath
-            or self.user_content_type == ObjectUserContentTypes.AssetPath
-        ):
+        if self.user_content_type == ObjectUserContentTypes.UncachedPath:
             writer.write_string(self.object_path)
+        elif self.user_content_type == ObjectUserContentTypes.AssetPath:
+            writer.write_string(self.asset_path)
         elif self.user_content_type == ObjectUserContentTypes.CachedPath:
             writer.write_u32(self.cache_index)
         elif self.user_content_type == ObjectUserContentTypes.TargetActor:
             writer.write_u32(self.target_actor_index)
+        elif self.user_content_type == ObjectUserContentTypes.MaterialReference:
+            writer.write_string(self.database_path)
+            writer.write_u32(self.database_index)
+        elif self.user_content_type == ObjectUserContentTypes.CachedMaterialPath:
+            writer.write_u32(self.database_cache_index)
+            writer.write_u32(self.database_index)
 
         # Extra null byte padding when `special` == 0x2 only exists in Reawakened
         # Otherwise it is the least significant byte from the length of a peroperty name for the
@@ -1627,58 +1739,57 @@ class SoftObjectProperty(BaseObject):
         self,
         header,
         user_content_type,
-        database_path,
-        database_index,
-        package_path,
-        asset_name,
-        subobject,
-        database_cache_index,
+        user_content_args,
     ):
         self.header = header
         self.user_content_type = user_content_type
-        self.database_path = database_path
-        self.database_index = database_index
-        self.package_path = package_path
-        self.asset_name = asset_name
-        self.subobject = subobject
-        self.database_cache_index = database_cache_index
+        if user_content_type == SoftObjectUserContentTypes.Database:
+            self.database_path = user_content_args["database_path"]
+            self.database_index = user_content_args["database_index"]
+        elif user_content_type == SoftObjectUserContentTypes.DirectPath:
+            self.package_path = user_content_args["package_path"]
+            self.asset_name = user_content_args["asset_name"]
+            self.subobject = user_content_args["subobject"]
+        elif user_content_type == SoftObjectUserContentTypes.CachedDatabase:
+            self.database_cache_index = user_content_args["database_cache_index"]
+            self.database_index = user_content_args["database_index"]
 
     @classmethod
     def parse(cls, reader, include_header=True):
         header = CommonHeader.parse(reader) if include_header else None
         user_content_type = SoftObjectUserContentTypes(reader.read_u8())
 
-        database_path = ""
-        database_index = -1
-        package_path = ""
-        asset_name = ""
-        subobject = ""
-        database_cache_index = -1
+        user_content_args = {}
         if user_content_type == SoftObjectUserContentTypes.Database:
             database_path = reader.read_string()
             database_index = reader.read_s32()
             SOFT_OBJECT_CACHED_STRINGS.append(database_path)
+            user_content_args.update({"database_path": database_path})
+            user_content_args.update({"database_index": database_index})
         elif user_content_type == SoftObjectUserContentTypes.DirectPath:
             # Unsure if it is cached
             package_path = reader.read_string()
             asset_name = reader.read_string()
             subobject = reader.read_string()
+            user_content_args.update({"package_path": package_path})
+            user_content_args.update({"asset_name": asset_name})
+            user_content_args.update({"subobject": subobject})
         elif user_content_type == SoftObjectUserContentTypes.CachedDatabase:
             database_cache_index = reader.read_s32()
             database_index = reader.read_s32()
+            user_content_args.update({"database_cache_index": database_cache_index})
+            user_content_args.update({"database_index": database_index})
         else:
             print(
+                f"Unimplemented soft object user_content_type: {user_content_type:#2x}"
+            )
+            raise NotImplementedError(
                 f"Unimplemented soft object user_content_type: {user_content_type:#2x}"
             )
         return cls(
             header,
             user_content_type,
-            database_path,
-            database_index,
-            package_path,
-            asset_name,
-            subobject,
-            database_cache_index,
+            user_content_args,
         )
 
     def to_dict(self):
@@ -1686,17 +1797,17 @@ class SoftObjectProperty(BaseObject):
         if self.header:
             ret.update({"header": self.header.to_dict()})
         ret.update({"user_content_type": self.user_content_type})
-        if self.database_path:
+        if hasattr(self, "database_path"):
             ret.update({"database_path": self.database_path})
-        if self.database_index != -1:
+        if hasattr(self, "database_index"):
             ret.update({"database_index": self.database_index})
-        if self.package_path:
+        if hasattr(self, "package_path"):
             ret.update({"package_path": self.package_path})
-        if self.asset_name:
+        if hasattr(self, "asset_name"):
             ret.update({"asset_name": self.asset_name})
-        if self.subobject:
+        if hasattr(self, "subobject"):
             ret.update({"subobject": self.subobject})
-        if self.database_cache_index != -1:
+        if hasattr(self, "database_cache_index"):
             ret.update({"database_cache_index": self.database_cache_index})
         return ret
 
@@ -1706,21 +1817,21 @@ class SoftObjectProperty(BaseObject):
         if "header" in dictionary:
             header = CommonHeader.from_dict(dictionary.pop("header"))
         user_content_type = dictionary["user_content_type"]
-        database_path = dictionary.get("database_path", "")
-        database_index = dictionary.get("database_index", -1)
-        package_path = dictionary.get("package_path", "")
-        asset_name = dictionary.get("asset_name", "")
-        subobject = dictionary.get("subobject", "")
-        database_cache_index = dictionary.get("database_cache_index", -1)
+        user_content_args = {}
+        if user_content_type == SoftObjectUserContentTypes.Database:
+            user_content_args.update({"database_path": dictionary["database_path"]})
+            user_content_args.update({"database_index": dictionary["database_index"]})
+        elif user_content_type == SoftObjectUserContentTypes.DirectPath:
+            user_content_args.update({"package_path": dictionary["package_path"]})
+            user_content_args.update({"asset_name": dictionary["asset_name"]})
+            user_content_args.update({"subobject": dictionary["subobject"]})
+        elif user_content_type == SoftObjectUserContentTypes.CachedDatabase:
+            user_content_args.update({"database_cache_index": dictionary["database_cache_index"]})
+            user_content_args.update({"database_index": dictionary["database_index"]})
         return cls(
             header,
             user_content_type,
-            database_path,
-            database_index,
-            package_path,
-            asset_name,
-            subobject,
-            database_cache_index,
+            user_content_args,
         )
 
     def unparse(self, writer, include_header=True):
@@ -1896,10 +2007,11 @@ class StructProperty(BaseObject):
 
     @classmethod
     def _parseT2(cls, reader, include_header=True, header_data=None):
-        print(f"Struct @ {reader.stream.tell():#2x}")
-        header = CommonHeader.parse(reader, optional_guid=False) if include_header else None
+        header = (
+            CommonHeader.parse(reader, optional_guid=False) if include_header else None
+        )
         struct_name = reader.read_string()
-        unknown = reader.read_data(0x11).decode(encoding="unicode_escape")  # Unknown
+        unknown = base64.b64encode(reader.read_data(0x11)).decode()
 
         if struct_name == "Vector":
             vector = struct.unpack("<3d", reader.read_data(8 * 3))
@@ -2089,7 +2201,7 @@ class StructProperty(BaseObject):
             header_pos = writer.stream.tell()
             self.header.unparse(writer, 0x41414141, optional_guid=False)
         writer.write_string(self.struct_name)
-        writer.write_data(self.unknown.encode())
+        writer.write_data(base64.b64decode(self.unknown))
         byte_count_start = writer.stream.tell()
 
         if self.struct_name == "Vector":
@@ -2162,7 +2274,6 @@ class TextProperty(BaseObject):
     def parse(cls, reader, include_header=True):
         header = CommonHeader.parse(reader) if include_header else None
         unknown1 = reader.read_u32()
-        assert unknown1 == 0x12
         unknown2 = reader.read_u8()
         assert unknown2 == 0xFF
         text_exists = reader.read_u32()
@@ -2254,6 +2365,7 @@ class Level:
                     reader.read_data(8)
                     # Read scripts until there are no more bytes
                     while reader.stream.peek(1):
+                        # print(f"Script @ {reader.stream.tell():#2x}")
                         script = ObjectProperty.parse(reader, include_header=False)
                         scripts.append(script)
                 actor_properties.elements = scripts
@@ -2272,7 +2384,7 @@ class Level:
         # Replace the ActorProperty ArrayOfBytes object with the parsed script objects
         # Actor properties use a separate string cache (likely because Talos parses them after the main script)
         # Do it here so we can save the actor property cached strings separately
-        # cls._actor_properties_fix(level_script)
+        cls._actor_properties_fix(level_script)
         game_version = GAME_VERSION
         actor_properties_cached_strings = CACHED_STRINGS
         soft_object_cached_strings = SOFT_OBJECT_CACHED_STRINGS
@@ -2297,9 +2409,7 @@ class Level:
         # Save the parsed actor properties so we don't need to re-parse them
         scene = level["level_script"]["named_properties"]["Scene"]
         if "named_properties" in scene:
-            actor_properties = level["level_script"]["named_properties"]["Scene"][
-                "named_properties"
-            ]["ActorProperties"]
+            actor_properties = scene["named_properties"]["ActorProperties"]
             actor_properties_scripts = []
             for script in actor_properties["elements"]:
                 actor_properties_scripts.append(
