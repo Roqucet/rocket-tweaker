@@ -656,7 +656,11 @@ class ByteProperty(BaseObject):
 
     @classmethod
     def _parseT2(cls, reader, decode_context, include_header=True):
-        header = CommonHeader.parse(reader, decode_context, optional_guid=False) if include_header else None
+        header = (
+            CommonHeader.parse(reader, decode_context, optional_guid=False)
+            if include_header
+            else None
+        )
         # Hacky fix for Talos2 byte properties
         path = reader.read_string()
         unknown = reader.read_u8()
@@ -1168,20 +1172,25 @@ class MapProperty(BaseObject):
         ):
             key_class = property_string_to_class[key_type]
             value_class = property_string_to_class[value_type]
-            if (
-                key_class == IntProperty
-                and value_class == StrProperty
-                or key_class == StructProperty
-                and value_class == StructProperty
-            ):
-                pass
+            if key_class == IntProperty and value_class == StrProperty:
+                key_header_data = None
+                value_header_data = None
+            elif key_class == StructProperty and value_class == StructProperty:
+                # Hard coding the struct-struct map becasue the older unreal version doesn't save the
+                # struct header information in the map header, preventing the struct type of the key
+                # from being known from the data in file
+
+                # Keys are known to be an IntPoint
+                key_header_data = {"struct_name": "IntPoint"}
+                # Value struct_name is based on the Reawakened struct
+                value_header_data = {"struct_name": "EditableMaskRegion"}
             else:
                 raise NotImplementedError(
                     f'Untested map element types "{key_type}" & "{value_type}"'
                 )
             for _ in range(count):
                 key = key_class.parse(
-                    reader, decode_context, include_header=False, header_data=None
+                    reader, decode_context, include_header=False, header_data=key_header_data
                 )
                 if isinstance(key, StructProperty):
                     # Used in one of the actor properties. intpoint struct
@@ -1189,7 +1198,7 @@ class MapProperty(BaseObject):
                     # Souldn't need to be edited anyway
                     key = json.dumps(key.to_dict())
                 value = value_class.parse(
-                    reader, decode_context, include_header=False, header_data=None
+                    reader, decode_context, include_header=False, header_data=value_header_data
                 )
                 map_data.update({key: value})
         else:
@@ -1201,10 +1210,10 @@ class MapProperty(BaseObject):
             non_zero_unknown,
             key_type,
             None,
-            None,
+            key_header_data,
             value_type,
             None,
-            None,
+            value_header_data,
             non_zero_unknown2,
             map_data,
         )
@@ -2110,13 +2119,15 @@ class StructProperty(BaseObject):
 
     @classmethod
     def _parseT2(cls, reader, decode_context, include_header=True, header_data=None):
-        header = (
-            CommonHeader.parse(reader, decode_context, optional_guid=False)
-            if include_header
-            else None
-        )
-        struct_name = reader.read_string()
-        unknown = base64.b64encode(reader.read_data(0x11)).decode()
+        if include_header:
+            header = CommonHeader.parse(reader, decode_context, optional_guid=False)
+            struct_name = reader.read_string()
+            unknown = base64.b64encode(reader.read_data(0x11)).decode()
+        else:
+            assert header_data
+            header = None
+            struct_name = header_data["struct_name"]
+            unknown = None
 
         if struct_name == "Vector":
             vector = struct.unpack("<3d", reader.read_data(8 * 3))
@@ -2192,7 +2203,8 @@ class StructProperty(BaseObject):
             ret.update({"header": self.header.to_dict()})
         ret.update({"magic": self.magic})
         ret.update({"struct_name": self.struct_name})
-        ret.update({"unknown": self.unknown})
+        if self.unknown:
+            ret.update({"unknown": self.unknown})
         ret.update({"path": self.path})
         if self.magic_unknown:
             ret.update({"magic_unknown": self.magic_unknown})
@@ -2216,7 +2228,7 @@ class StructProperty(BaseObject):
             header = CommonHeader.from_dict(dictionary["header"])
         magic = dictionary["magic"]
         struct_name = dictionary["struct_name"]
-        unknown = dictionary["unknown"]
+        unknown = dictionary.get("unknown", None)
         path = dictionary["path"]
         magic_unknown = dictionary.get("magic_unknown", "")
         uuid = dictionary.get("uuid", "")
@@ -2306,8 +2318,8 @@ class StructProperty(BaseObject):
             # Write the header with a junk byte count to be replaced once the string length is known
             header_pos = writer.stream.tell()
             self.header.unparse(writer, decode_context, 0x41414141, optional_guid=False)
-        writer.write_string(self.struct_name)
-        writer.write_data(base64.b64decode(self.unknown))
+            writer.write_string(self.struct_name)
+            writer.write_data(base64.b64decode(self.unknown))
         byte_count_start = writer.stream.tell()
 
         if self.struct_name == "Vector":
