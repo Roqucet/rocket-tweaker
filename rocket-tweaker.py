@@ -3,7 +3,7 @@
 """
 Author: Rocket (Discord: @roqucet)
 Created: 2026-01-27
-Version: v0.2.0
+Version: v0.2.1
 Description: Gives more freedom for editing TTP:R .level/.episode files.
     Lets you dump a file to .json for manual editing, or create a .level/.episode from .json.
     Will save a backup when trying to overwrite a file
@@ -21,9 +21,18 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import IntEnum
 
+# TODO: Move globals to a local "Decode context" parsed as an argument to the parse/unparse functions
+# Allows for loading multiple files in the same script
 CACHED_STRINGS = []
 SOFT_OBJECT_CACHED_STRINGS = []
 
+class GameVersion(IntEnum):
+    Unknown = -1
+    Reawakened = 1
+    Talos2 = 2
+    Talos3 = 3
+
+GAME_VERSION = GameVersion.Unknown
 
 class BinaryReader:
     def __init__(self, stream):
@@ -58,6 +67,9 @@ class BinaryReader:
 
         data = self.read_data(string_length)
         return data.decode(encoding=encoding).rstrip("\x00")
+
+    def peek(self, size):
+        return self.stream.peek(size)[:size]
 
 
 class BinaryWriter:
@@ -153,14 +165,13 @@ class CommonHeader(BaseObject):
         return cls([], None)
 
     @classmethod
-    def parse(cls, reader, optional_guid=True):
+    def _parseR(cls, reader, optional_guid=True):
         strings = []
         while True:
             string_exists = reader.read_u32()
             if string_exists == 0:
                 break
             strings.append(reader.read_string())
-
         reader.read_u32()  # property_length - Ignore as we always recalculate
         guid = None
         if optional_guid:
@@ -169,8 +180,35 @@ class CommonHeader(BaseObject):
             # Should fail a level -> JSON -> level test as it isn't unparsed
             if has_guid != 0:
                 guid = reader.read_data(16)
-
         return cls(strings, guid)
+
+    @classmethod
+    def _parseT2(cls, reader, optional_guid=True):
+        # raise NotImplementedError("Common header parsing for Talos 2 files not implemented")
+        reader.read_u32()  # property_length - Ignore as we always recalculate
+        strings = []
+        while True:
+            string_exists = reader.read_u32()
+            if string_exists == 0:
+                break
+            strings.append(reader.read_string())
+        guid = None
+        if optional_guid:
+            has_guid = reader.read_u8()
+            # TODO: find a case where this is true
+            # Should fail a level -> JSON -> level test as it isn't unparsed
+            if has_guid != 0:
+                guid = reader.read_data(16)
+        return cls(strings, guid)
+
+    @classmethod
+    def parse(cls, reader, optional_guid=True):
+        if GAME_VERSION == GameVersion.Reawakened:
+            return cls._parseR(reader, optional_guid)
+        elif GAME_VERSION == GameVersion.Talos2:
+            return cls._parseT2(reader, optional_guid)
+        else:
+            raise NotImplementedError("Unknown game version")
 
     def to_dict(self):
         ret = {}
@@ -186,20 +224,38 @@ class CommonHeader(BaseObject):
         guid = dictionary.get("guid", None)
         return cls(strings, guid)
 
-    def unparse(self, writer, replace_byte_count=-1, optional_guid=True):
+    def _unparseR(self, writer, byte_count, optional_guid=True):
         for string in self.strings:
             writer.write_u32(1)
             writer.write_string(string)
         writer.write_data(b"\x00" * 4)
-        if replace_byte_count != -1:
-            writer.write_u32(replace_byte_count)
-        else:
-            writer.write_u32(self.property_length)
+        writer.write_u32(byte_count)
 
         # TODO: find a case where this is true
         # Should fail a level -> JSON -> level test as it isn't unparsed
         if optional_guid:
             writer.write_data(b"\x00" * 1)
+
+    def _unparseT2(self, writer, byte_count, optional_guid=True):
+        writer.write_u32(byte_count)
+
+        for string in self.strings:
+            writer.write_u32(1)
+            writer.write_string(string)
+        writer.write_data(b"\x00" * 4)
+
+        # TODO: find a case where this is true
+        # Should fail a level -> JSON -> level test as it isn't unparsed
+        if optional_guid:
+            writer.write_data(b"\x00" * 1)
+
+    def unparse(self, writer, byte_count, optional_guid=True):
+        if GAME_VERSION == GameVersion.Reawakened:
+            return self._unparseR(writer, byte_count, optional_guid)
+        elif GAME_VERSION == GameVersion.Talos2:
+            return self._unparseT2(writer, byte_count, optional_guid)
+        else:
+            raise NotImplementedError("Unknown game version")
 
 
 class ArrayOfBytes:
@@ -228,7 +284,7 @@ class ArrayProperty(BaseObject):
         self.elements = elements
 
     @classmethod
-    def parse(cls, reader):
+    def _parseR(cls, reader):
         non_zero_unknown = reader.read_data(4).decode(encoding="unicode_escape")
         element_type = reader.read_string()
         include_type_header = reader.read_u32()
@@ -263,6 +319,7 @@ class ArrayProperty(BaseObject):
                     f'Warning! Untested array element type "{element_type}". Potential for incorrect parsing / crash'
                 )
             for _ in range(length):
+                print(element_class)
                 elements.append(
                     element_class.parse(
                         reader, include_header=False, header_data=header_data
@@ -276,6 +333,67 @@ class ArrayProperty(BaseObject):
         return cls(
             non_zero_unknown, element_type, include_type_header, header_data, elements
         )
+
+    @classmethod
+    def _parseT2(cls, reader):
+        # raise NotImplementedError("Array parsing for Talos 2 files not implemented")
+        reader.read_u32()  # Byte count - Ignore as we always recalculate
+        non_zero_unknown = reader.read_data(4).decode(encoding="unicode_escape")
+        element_type = reader.read_string()
+        # include_type_header = reader.read_u32()
+        # header_data = None
+        # if include_type_header != 0:
+        #     if element_type == "EnumProperty":
+        #         # We can call parse_separate_header since we know the type
+        #         header_data = EnumProperty.parse_separate_header(reader)
+        #     elif element_type == "StructProperty":
+        #         # We can call parse_separate_header since we know the type
+        #         header_data = StructProperty.parse_separate_header(
+        #             reader, magic=include_type_header
+        #         )
+        #     else:
+        #         print(
+        #             f'Warning! Unknown array type with extra data! Type:"{element_type}". Probable crash'
+        #         )
+
+        reader.read_data(1)  # Unknown
+        length = reader.read_u32()  # Don't save length as we always recalculate
+
+        elements = []
+        if element_type == "ByteProperty":  # Hacky ByteProperty fix
+            # The ByteProperty type is weird and actually reads strings when part of enums
+            # Use ArrayOfBytes instead
+            elements.append(ArrayOfBytes(reader.read_data(length)))
+        elif element_type in property_string_to_class:
+            element_class = property_string_to_class[element_type]
+            if not element_class in TESTED_ARRAY_CLASSES:
+                print(
+                    f'Warning! Untested array element type "{element_type}". Potential for incorrect parsing / crash'
+                )
+            for _ in range(length):
+                elements.append(
+                    element_class.parse(
+                        reader, include_header=False, header_data=None
+                    )
+                )
+        else:
+            print(f'Unimplemented array property type!: "{element_type}"')
+            data = base64.b64encode(reader.read_data(length))
+            elements.append({"data": data.decode()})
+
+        return cls(
+            non_zero_unknown, element_type, None, None, elements
+        )
+
+    @classmethod
+    def parse(cls, reader):
+        if GAME_VERSION == GameVersion.Reawakened:
+            return cls._parseR(reader)
+        elif GAME_VERSION == GameVersion.Talos2:
+            return cls._parseT2(reader)
+        else:
+            raise NotImplementedError("Unknown game version")
+        
 
     def to_dict(self):
         ret = {}
@@ -320,7 +438,7 @@ class ArrayProperty(BaseObject):
                 elements.append(data)
         return cls(unknown, element_type, include_type_header, header_data, elements)
 
-    def unparse(self, writer):
+    def _unparseR(self, writer):
         if self.element_type == "ByteProperty":  # Hacky ByteProperty fix
             length = len(self.elements[0].data)
         else:
@@ -376,6 +494,71 @@ class ArrayProperty(BaseObject):
         writer.write_u32(byte_count)
         writer.stream.seek(current_pos, os.SEEK_SET)
 
+    def _unparseT2(self, writer):
+        # raise NotImplementedError("Array unparsing for Talos 2 files not implemented")
+        if self.element_type == "ByteProperty":  # Hacky ByteProperty fix
+            length = len(self.elements[0].data)
+        else:
+            length = len(self.elements)
+
+        # Calculate bytes dynamically
+        byte_count_pos = writer.stream.tell()
+        writer.write_u32(0x41414141)
+
+        writer.write_data(self.unknown.encode())
+        writer.write_string(self.element_type)
+
+        # writer.write_u32(self.include_type_header)
+        # # Extra header info
+        # if self.include_type_header != 0:
+        #     assert self.header_data  # Make sure header data exists
+        #     if self.element_type == "EnumProperty":
+        #         # We can call parse_separate_header since we know the type
+        #         EnumProperty.unparse_separate_header(writer, self.header_data)
+        #     elif self.element_type == "StructProperty":
+        #         # We can call parse_separate_header since we know the type
+        #         StructProperty.unparse_separate_header(
+        #             writer, magic=self.include_type_header, header_data=self.header_data
+        #         )
+        #     else:
+        #         print(
+        #             f'Warning! Unknown array type with extra data! Type:"{self.element_type}". Probable crash'
+        #         )
+
+        writer.write_data(b"\x00" * 1)
+        byte_count_start = writer.stream.tell()
+        writer.write_u32(length)
+
+        if self.element_type == "ByteProperty":  # Hacky ByteProperty fix
+            writer.write_data(self.elements[0].data)
+        elif self.element_type in property_string_to_class:
+            for element in self.elements:
+                element_class = property_string_to_class[self.element_type]
+                if not element_class in TESTED_ARRAY_CLASSES:
+                    print(
+                        f'Warning! Untested array element type "{self.element_type}". Potential for incorrect unparsing / crash'
+                    )
+                element.unparse(
+                    writer, include_header=False, header_data=self.header_data
+                )
+        else:
+            writer.write_data(base64.b64decode(self.elements[0]["data"].encode()))
+
+        # Fix for unknown data length
+        current_pos = writer.stream.tell()
+        writer.stream.seek(byte_count_pos, os.SEEK_SET)
+        byte_count = current_pos - byte_count_start
+        writer.write_u32(byte_count)
+        writer.stream.seek(current_pos, os.SEEK_SET)
+
+    def unparse(self, writer):
+        if GAME_VERSION == GameVersion.Reawakened:
+            return self._unparseR(writer)
+        elif GAME_VERSION == GameVersion.Talos2:
+            return self._unparseT2(writer)
+        else:
+            raise NotImplementedError("Unknown game version")
+
 
 class BoolProperty(BaseObject):
     def __init__(self, header, bool_):
@@ -383,12 +566,32 @@ class BoolProperty(BaseObject):
         self.bool_ = bool_
 
     @classmethod
-    def parse(cls, reader, include_header=True, header_data=None):
+    def _parseR(cls, reader, include_header=True, header_data=None):
         header = (
             CommonHeader.parse(reader, optional_guid=False) if include_header else None
         )
         bool_ = reader.read_u8()
+        if GAME_VERSION == GameVersion.Talos2:
+            reader.read_u8()
         return cls(header, bool_)
+
+    @classmethod
+    def _parseT2(cls, reader, include_header=True, header_data=None):
+        header = (
+            CommonHeader.parse(reader, optional_guid=False) if include_header else None
+        )
+        bool_ = reader.read_u8()
+        reader.read_u8()    # Random extra byte in Talos 2?
+        return cls(header, bool_)
+
+    @classmethod
+    def parse(cls, reader, include_header=True, header_data=None):
+        if GAME_VERSION == GameVersion.Reawakened:
+            return cls._parseR(reader, include_header, header_data)
+        elif GAME_VERSION == GameVersion.Talos2:
+            return cls._parseT2(reader, include_header, header_data)
+        else:
+            raise NotImplementedError("Unknown game version")
 
     def to_dict(self):
         ret = {}
@@ -405,11 +608,26 @@ class BoolProperty(BaseObject):
         bool_ = dictionary["bool"]
         return cls(header, bool_)
 
-    def unparse(self, writer, include_header=True, header_data=None):
+    def _unparseR(self, writer, include_header=True, header_data=None):
         if include_header:
             # Always 0 bytes
-            self.header.unparse(writer, replace_byte_count=0, optional_guid=False)
+            self.header.unparse(writer, 0, optional_guid=False)
         writer.write_u8(self.bool_)
+
+    def _unparseT2(self, writer, include_header=True, header_data=None):
+        if include_header:
+            # Always 0 bytes
+            self.header.unparse(writer, 0, optional_guid=False)
+        writer.write_u8(self.bool_)
+        writer.write_u8(0)      # Random extra byte TODO: Maybe save
+
+    def unparse(self, writer, include_header=True, header_data=None):
+        if GAME_VERSION == GameVersion.Reawakened:
+            return self._unparseR(writer, include_header, header_data)
+        elif GAME_VERSION == GameVersion.Talos2:
+            return self._unparseT2(writer, include_header, header_data)
+        else:
+            raise NotImplementedError("Unknown game version")
 
 
 class ByteProperty(BaseObject):
@@ -444,7 +662,7 @@ class ByteProperty(BaseObject):
         if include_header:
             # Write the header with a junk byte count to be replaced once the string length is known
             header_pos = writer.stream.tell()
-            self.header.unparse(writer, replace_byte_count=0x41414141)
+            self.header.unparse(writer, 0x41414141)
             byte_count_start = writer.stream.tell()
 
         writer.write_string(self.byte)
@@ -454,7 +672,7 @@ class ByteProperty(BaseObject):
             current_pos = writer.stream.tell()
             writer.stream.seek(header_pos, os.SEEK_SET)
             byte_count = current_pos - byte_count_start
-            self.header.unparse(writer, replace_byte_count=byte_count)
+            self.header.unparse(writer, byte_count)
             writer.stream.seek(current_pos, os.SEEK_SET)
 
 
@@ -487,7 +705,7 @@ class DoubleProperty(BaseObject):
     def unparse(self, writer, include_header=True):
         if include_header:
             # Always 8 bytes
-            self.header.unparse(writer, replace_byte_count=8)
+            self.header.unparse(writer, 8)
         writer.write_f64(self.double)
 
 
@@ -640,7 +858,7 @@ class FloatProperty(BaseObject):
     def unparse(self, writer, include_header=True):
         if include_header:
             # Always 4 bytes
-            self.header.unparse(writer, replace_byte_count=4)
+            self.header.unparse(writer, 4)
         writer.write_f32(self.float_)
 
 
@@ -673,7 +891,7 @@ class IntProperty(BaseObject):
     def unparse(self, writer, include_header=True, header_data=None):
         if include_header:
             # Always 4 bytes
-            self.header.unparse(writer, replace_byte_count=4)
+            self.header.unparse(writer, 4)
         writer.write_s32(self.int_)
 
 
@@ -701,7 +919,7 @@ class MapProperty(BaseObject):
         self.map_data = map_data
 
     @classmethod
-    def parse(cls, reader):
+    def _parseR(cls, reader):
         non_zero_unknown = reader.read_data(4).decode(
             encoding="unicode_escape"
         )  # Unknown
@@ -791,6 +1009,107 @@ class MapProperty(BaseObject):
             map_data,
         )
 
+    @classmethod
+    def _parseT2(cls, reader):
+        # raise NotImplementedError("Map parsing for Talos 2 files not implemented")
+        reader.read_u32()  # Byte count - Ignore as we always recalculate
+        non_zero_unknown = reader.read_data(4).decode(
+            encoding="unicode_escape"
+        )  # Unknown
+        key_type = reader.read_string()
+        # include_key_header = reader.read_u32()
+        # key_header_data = None
+        # if include_key_header != 0:
+        #     if key_type == "StructProperty":
+        #         # We can call parse_separate_header since we know the type
+        #         key_header_data = StructProperty.parse_separate_header(
+        #             reader, magic=include_key_header
+        #         )
+        #     else:
+        #         print(
+        #             f'Warning! Unknown key with extra data! Key Type:"{key_type}". Probable crash'
+        #         )
+
+        value_type = reader.read_string()
+        # include_value_header = reader.read_u32()
+        # value_header_data = None
+        # if include_value_header != 0:
+        #     if value_type == "StructProperty":
+        #         # We can call parse_separate_header since we know the type
+        #         value_header_data = StructProperty.parse_separate_header(
+        #             reader, magic=include_value_header
+        #         )
+        #     else:
+        #         print(
+        #             f'Warning! Unknown value with extra data! Value Type:"{value_type}". Probable crash'
+        #         )
+        non_zero_unknown2 = reader.read_data(1).decode(
+            encoding="unicode_escape"
+        )  # Unknown
+        reader.read_data(4)  # Unknown
+        count = reader.read_u32()  # Don't save element count as we always recalculate
+
+        map_data = {}
+        if (
+            key_type in property_string_to_class
+            and value_type in property_string_to_class
+        ):
+            key_class = property_string_to_class[key_type]
+            value_class = property_string_to_class[value_type]
+            if (
+                key_class == IntProperty
+                and value_class == StrProperty
+                or key_class == StructProperty
+                and value_class == StructProperty
+            ):
+                pass
+            else:
+                print(
+                    f'Warning! Untested map element types "{key_type}" & "{value_type}". Potential for incorrect parsing / crash'
+                )
+            for _ in range(count):
+                key = key_class.parse(
+                    reader, include_header=False, header_data=None
+                )
+                if isinstance(key, StructProperty):
+                    # Used in one of the actor properties. intpoint struct
+                    # Convert it to a JSON string so it is hashable & python is happy
+                    # Souldn't need to be edited anyway
+                    key = json.dumps(key.to_dict())
+                value = value_class.parse(
+                    reader, include_header=False, header_data=None
+                )
+                map_data.update({key: value})
+        else:
+            print(
+                f'Unimplemented map type(s)!: @{reader.stream.tell():#2x} "{key_type}" || "{value_type}"'
+            )
+            # Exception now that we aren't saving the byte count
+            raise NotImplementedError(
+                f'Unimplemented map type(s)!: @{reader.stream.tell():#2x} "{key_type}" || "{value_type}"'
+            )
+
+        return cls(
+            non_zero_unknown,
+            key_type,
+            None,
+            None,
+            value_type,
+            None,
+            None,
+            non_zero_unknown2,
+            map_data,
+        )
+
+    @classmethod
+    def parse(cls, reader):
+        if GAME_VERSION == GameVersion.Reawakened:
+            return cls._parseR(reader)
+        elif GAME_VERSION == GameVersion.Talos2:
+            return cls._parseT2(reader)
+        else:
+            raise NotImplementedError("Unknown game version")
+
     def to_dict(self):
         ret = {}
         ret.update({"unknown": self.unknown})
@@ -853,7 +1172,7 @@ class MapProperty(BaseObject):
             new_map_data,
         )
 
-    def unparse(self, writer):
+    def _unparseR(self, writer):
         count = len(self.map_data)
 
         writer.write_data(self.unknown.encode())
@@ -931,6 +1250,94 @@ class MapProperty(BaseObject):
         writer.write_u32(byte_count)
         writer.stream.seek(current_pos, os.SEEK_SET)
 
+    def _unparseT2(self, writer):
+        # raise NotImplementedError("Map unparsing for Talos 2 files not implemented")
+        count = len(self.map_data)
+
+        # Calculate bytes dynamically
+        byte_count_pos = writer.stream.tell()
+        writer.write_u32(0x41414141)
+
+        writer.write_data(self.unknown.encode())
+        writer.write_string(self.key_type)
+        # writer.write_u32(self.include_key_header)
+        # if self.key_header_data:
+        #     if self.key_type == "StructProperty":
+        #         StructProperty.unparse_separate_header(
+        #             writer,
+        #             magic=self.include_key_header,
+        #             header_data=self.key_header_data,
+        #         )
+        #     else:
+        #         print(
+        #             f'Warning! Unknown key with extra data! Key Type:"{self.key_type}". Probable crash'
+        #         )
+
+        writer.write_string(self.value_type)
+        # writer.write_u32(self.include_value_header)
+        # if self.value_header_data:
+        #     if self.value_type == "StructProperty":
+        #         StructProperty.unparse_separate_header(
+        #             writer,
+        #             magic=self.include_value_header,
+        #             header_data=self.value_header_data,
+        #         )
+        #     else:
+        #         print(
+        #             f'Warning! Unknown key with extra data! Value Type:"{self.value_type}". Probable crash'
+        #         )
+
+
+        writer.write_data(self.unknown2.encode())
+        byte_count_start = writer.stream.tell()
+
+        writer.write_data(b"\x00" * 4)  # Unknown
+
+        # Write map count based on element length
+        writer.write_u32(count)
+
+        for key, value in self.map_data.items():
+            if (
+                self.key_type in property_string_to_class
+                and self.value_type in property_string_to_class
+            ):
+                if (
+                    self.key_type == "IntProperty"
+                    and self.value_type == "StrProperty"
+                    or self.key_type == "StructProperty"
+                    and self.value_type == "StructProperty"
+                ):
+                    pass
+                else:
+                    print(
+                        f'Warning! Untested map element types "{self.key_type}" & "{self.value_type}". Potential for incorrect parsing / crash'
+                    )
+
+                if self.key_type == "StructProperty":
+                    # Used in one of the actor properties. intpoint struct
+                    # Need to convert it to a struct property to call unparse
+                    key = StructProperty.from_dict(json.loads(key))
+                key.unparse(
+                    writer, include_header=False, header_data=self.key_header_data
+                )
+                value.unparse(
+                    writer, include_header=False, header_data=self.value_header_data
+                )
+
+        # Hacky fix for data length
+        current_pos = writer.stream.tell()
+        writer.stream.seek(byte_count_pos, os.SEEK_SET)
+        byte_count = current_pos - byte_count_start
+        writer.write_u32(byte_count)
+        writer.stream.seek(current_pos, os.SEEK_SET)
+
+    def unparse(self, writer):
+        if GAME_VERSION == GameVersion.Reawakened:
+            return self._unparseR(writer)
+        elif GAME_VERSION == GameVersion.Talos2:
+            return self._unparseT2(writer)
+        else:
+            raise NotImplementedError("Unknown game version")
 
 class NamedProperty(BaseObject):
     def __init__(self, name, property_type, property_object):
@@ -940,6 +1347,7 @@ class NamedProperty(BaseObject):
 
     @classmethod
     def parse(cls, reader):
+        print(f"Named Property @ {reader.stream.tell():#2x}")
         name = reader.read_string()
         if name == "None":
             # 4 bytes after "None" is a 0 length string
@@ -1025,7 +1433,7 @@ class ObjectProperty(BaseObject):
         if include_header:
             # Write the header with a junk byte count to be replaced once the object length is known
             header_pos = writer.stream.tell()
-            self.header.unparse(writer, replace_byte_count=0x41414141)
+            self.header.unparse(writer, 0x41414141)
             byte_count_start = writer.stream.tell()
         self.object_.unparse(writer)
 
@@ -1034,7 +1442,7 @@ class ObjectProperty(BaseObject):
             current_pos = writer.stream.tell()
             writer.stream.seek(header_pos, os.SEEK_SET)
             byte_count = current_pos - byte_count_start
-            self.header.unparse(writer, replace_byte_count=byte_count)
+            self.header.unparse(writer, byte_count)
             writer.stream.seek(current_pos, os.SEEK_SET)
 
 
@@ -1096,8 +1504,17 @@ class ScriptObject(BaseObject):
         else:
             print(f"Unimplemented user content type: {user_content_type:#2x}")
 
+        # Extra null byte padding when `special` == 0x2 only exists in Reawakened
+        # Otherwise it is the least significant byte from the length of a peroperty name for the
+        # CustomEpisode/CustomLevel script, which can never be a multiple of 256 (false positive)
+        # Use the first instance of this as a way to determine which game the file is from
+        global GAME_VERSION
+        if GAME_VERSION == GameVersion.Unknown and special == 0x2:
+            GAME_VERSION = GameVersion.Reawakened if reader.peek(1) == b"\x00" else GameVersion.Talos2
+
+        # TODO: Split to separate Reawakened & Talos2 parse functions
         # Extra padding sometimes, noticed it's the case when `special` == 0x2
-        if special == 0x2:
+        if GAME_VERSION == GameVersion.Reawakened and special == 0x2:
             reader.read_data(1)
 
         # Guessing this determines if there are named properties
@@ -1108,7 +1525,7 @@ class ScriptObject(BaseObject):
                 if prop == None:
                     break
                 named_properties.append(prop)
-        elif special == 0x08 or special == 0x07 or special == 0x03 or special == 0x4:
+        elif special == 0x08 or special == 0x07 or special == 0x04 or special == 0x03:
             # No named properties
             pass
         else:
@@ -1162,13 +1579,12 @@ class ScriptObject(BaseObject):
         )
 
     def unparse(self, writer):
-        writer.write_u8(self.special)
+        writer.write_u8(self.special) 
         if self.special == 0:
             # Object ends
             return
 
-        # Extra padding sometimes, noticed it's the case when `special` == 0x2
-        if self.special == 0x02:
+        if self.special == 0x2:
             writer.write_u8(self.user_content_type)
 
         if (
@@ -1181,7 +1597,14 @@ class ScriptObject(BaseObject):
         elif self.user_content_type == ObjectUserContentTypes.TargetActor:
             writer.write_u32(self.target_actor_index)
 
-        if self.special == 0x02:
+        # Extra null byte padding when `special` == 0x2 only exists in Reawakened
+        # Otherwise it is the least significant byte from the length of a peroperty name for the
+        # CustomEpisode/CustomLevel script, which can never be a multiple of 256 (false positive)
+        # Use the first instance of this as a way to determine which game the file is from
+
+        # TODO: Split to separate Reawakened & Talos2 parse functions
+        # Extra padding sometimes, noticed it's the case when `special` == 0x2
+        if GAME_VERSION == GameVersion.Reawakened and self.special == 0x02:
             writer.write_data(b"\x00")
 
         if self.special == 0x02:
@@ -1304,7 +1727,7 @@ class SoftObjectProperty(BaseObject):
         if include_header:
             # Write the header with a junk byte count to be replaced once the object length is known
             header_pos = writer.stream.tell()
-            self.header.unparse(writer, replace_byte_count=0x41414141)
+            self.header.unparse(writer, 0x41414141)
             byte_count_start = writer.stream.tell()
 
         writer.write_u8(self.user_content_type)
@@ -1324,7 +1747,7 @@ class SoftObjectProperty(BaseObject):
             current_pos = writer.stream.tell()
             writer.stream.seek(header_pos, os.SEEK_SET)
             byte_count = current_pos - byte_count_start
-            self.header.unparse(writer, replace_byte_count=byte_count)
+            self.header.unparse(writer, byte_count)
             writer.stream.seek(current_pos, os.SEEK_SET)
 
 
@@ -1358,7 +1781,7 @@ class StrProperty(BaseObject):
         if include_header:
             # Write the header with a junk byte count to be replaced once the string length is known
             header_pos = writer.stream.tell()
-            self.header.unparse(writer, replace_byte_count=0x41414141)
+            self.header.unparse(writer, 0x41414141)
             byte_count_start = writer.stream.tell()
 
         writer.write_string(self.string)
@@ -1368,7 +1791,7 @@ class StrProperty(BaseObject):
             current_pos = writer.stream.tell()
             writer.stream.seek(header_pos, os.SEEK_SET)
             byte_count = current_pos - byte_count_start
-            self.header.unparse(writer, replace_byte_count=byte_count)
+            self.header.unparse(writer, byte_count)
             writer.stream.seek(current_pos, os.SEEK_SET)
 
 
@@ -1650,7 +2073,7 @@ class TextProperty(BaseObject):
         if include_header:
             # Write the header with a junk byte count to be replaced once the string length is known
             header_pos = writer.stream.tell()
-            self.header.unparse(writer, replace_byte_count=0x41414141)
+            self.header.unparse(writer, 0x41414141)
             byte_count_start = writer.stream.tell()
 
         writer.write_u32(self.unknown1)
@@ -1666,7 +2089,7 @@ class TextProperty(BaseObject):
             current_pos = writer.stream.tell()
             writer.stream.seek(header_pos, os.SEEK_SET)
             byte_count = current_pos - byte_count_start
-            self.header.unparse(writer, replace_byte_count=byte_count)
+            self.header.unparse(writer, byte_count)
             writer.stream.seek(current_pos, os.SEEK_SET)
 
 
@@ -1674,11 +2097,13 @@ class TextProperty(BaseObject):
 class Level:
     def __init__(
         self,
+        game_version,
         level_script,
         cached_strings,
         actor_properties_cached_strings,
         soft_object_cached_strings,
     ):
+        self.game_version = game_version
         self.level_script = level_script
         self.cached_strings = cached_strings
         self.actor_properties_cached_strings = actor_properties_cached_strings
@@ -1727,9 +2152,11 @@ class Level:
         # Actor properties use a separate string cache (likely because Talos parses them after the main script)
         # Do it here so we can save the actor property cached strings separately
         cls._actor_properties_fix(level_script)
+        game_version = GAME_VERSION
         actor_properties_cached_strings = CACHED_STRINGS
         soft_object_cached_strings = SOFT_OBJECT_CACHED_STRINGS
         return cls(
+            game_version,
             level_script,
             cached_strings,
             actor_properties_cached_strings,
@@ -1738,10 +2165,12 @@ class Level:
 
     @classmethod
     def from_dict(cls, dictionary):
+        global GAME_VERSION
         global CACHED_STRINGS
         global SOFT_OBJECT_CACHED_STRINGS
         level = dictionary
         # Parse the ActorProperty array to an ArrayOfBytes object to correctly read the JSON
+        GAME_VERSION = level["game_version"]
         CACHED_STRINGS = level["actor_properties_cached_strings"]
         SOFT_OBJECT_CACHED_STRINGS = level["soft_object_cached_strings"]
         # Save the parsed actor properties so we don't need to re-parse them
@@ -1772,6 +2201,7 @@ class Level:
 
         CACHED_STRINGS = level["cached_strings"]
         level_script = ScriptObject.from_dict(level["level_script"])
+        game_version = GAME_VERSION
         cached_strings = CACHED_STRINGS
         actor_properties_cached_strings = CACHED_STRINGS
         soft_object_cached_strings = SOFT_OBJECT_CACHED_STRINGS
@@ -1785,8 +2215,8 @@ class Level:
             if actor_properties:
                 actor_properties = actor_properties.property_object
                 actor_properties.elements = actor_properties_scripts
-
         return cls(
+            game_version,
             level_script,
             cached_strings,
             actor_properties_cached_strings,
@@ -1795,6 +2225,7 @@ class Level:
 
     def to_json(self, json_path):
         level = {
+            "game_version": self.game_version,
             "cached_strings": self.cached_strings,
             "actor_properties_cached_strings": self.actor_properties_cached_strings,
             "soft_object_cached_strings": self.soft_object_cached_strings,
@@ -1843,7 +2274,8 @@ class Level:
 
 # Class for episode files
 class Episode:
-    def __init__(self, episode_script, cached_strings):
+    def __init__(self, game_version, episode_script, cached_strings):
+        self.game_version = game_version
         self.episode_script = episode_script
         self.cached_strings = cached_strings
 
@@ -1859,21 +2291,26 @@ class Episode:
             # Unknown what the first 8 bytes are. Always 0
             reader.read_data(8)
             episode_script = ScriptObject.parse(reader)
+        game_version = GAME_VERSION
         cached_strings = CACHED_STRINGS
-        return cls(episode_script, cached_strings)
+        return cls(game_version, episode_script, cached_strings)
 
     @classmethod
     def from_dict(cls, dictionary):
+        global GAME_VERSION
         global CACHED_STRINGS
         CACHED_STRINGS = []
         episode = dictionary
+        GAME_VERSION = episode["game_version"]
         CACHED_STRINGS = episode["cached_strings"]
         episode_script = ScriptObject.from_dict(episode["episode_script"])
+        game_version = GAME_VERSION
         cached_strings = CACHED_STRINGS
-        return cls(episode_script, cached_strings)
+        return cls(game_version, episode_script, cached_strings)
 
     def to_json(self, json_path):
         episode = {
+            "game_version": self.game_version,
             "cached_strings": self.cached_strings,
             "episode_script": self.episode_script.to_dict(),
         }
@@ -1986,7 +2423,9 @@ def main():
 
         # If writing to .episode/.level, save a backup. Some date/time format as talos logs
         if os.path.exists(output_path):
-            time_string = datetime.now(datetime.now().astimezone().tzinfo).strftime("%Y.%m.%d-%H.%M.%S")
+            time_string = datetime.now(datetime.now().astimezone().tzinfo).strftime(
+                "%Y.%m.%d-%H.%M.%S"
+            )
             backup_path = output_path + "." + time_string + ".bak"
             print(f'Saving backup to: "{backup_path}"')
             shutil.copy(output_path, backup_path)
@@ -2013,6 +2452,7 @@ def main():
 
         file = file_class.from_file(input_path)
         file.to_json(output_path)
+
 
 if __name__ == "__main__":
     main()
