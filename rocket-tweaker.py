@@ -18,24 +18,19 @@ import shutil
 import struct
 import sys
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import IntEnum
 
 # TODO: Move globals to a local "Decode context" parsed as an argument to the parse/unparse functions
 # Allows for loading multiple files in the same script
-SCRIPT_PATH_CACHE = []
-DATABASE_PATH_CACHE = []
-ASSET_PATH_CACHE = []
-SOFT_OBJECT_ASSET_PATH_CACHE = []
+
 
 class GameVersion(IntEnum):
     Unknown = -1
     Reawakened = 1
     Talos2 = 2
     Talos3 = 3
-
-
-GAME_VERSION = GameVersion.Unknown
 
 
 class BinaryReader:
@@ -120,6 +115,15 @@ class BinaryWriter:
         self.stream.write(bytes_data)
 
 
+@dataclass
+class DecodeContext:
+    game_version: GameVersion = GameVersion.Unknown
+    script_path_cache: list = field(default_factory=list)
+    database_path_cache: list = field(default_factory=list)
+    asset_path_cache: list = field(default_factory=list)
+    soft_object_asset_path_cache: list = field(default_factory=list)
+
+
 class BaseObject(ABC):
     @abstractmethod
     def __init__(self):
@@ -134,7 +138,7 @@ class BaseObject(ABC):
 
     @classmethod
     @abstractmethod
-    def parse(cls, reader):
+    def parse(cls, reader, decode_context):
         """Create an object from a level file byte stream"""
         raise NotImplementedError
 
@@ -150,7 +154,7 @@ class BaseObject(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def unparse(self, writer):
+    def unparse(self, writer, decode_context):
         """Write an object to a level file byte stream"""
         raise NotImplementedError
 
@@ -206,10 +210,10 @@ class CommonHeader(BaseObject):
         return cls(strings, guid)
 
     @classmethod
-    def parse(cls, reader, optional_guid=True):
-        if GAME_VERSION == GameVersion.Reawakened:
+    def parse(cls, reader, decode_context, optional_guid=True):
+        if decode_context.game_version == GameVersion.Reawakened:
             return cls._parseR(reader, optional_guid)
-        elif GAME_VERSION == GameVersion.Talos2:
+        elif decode_context.game_version == GameVersion.Talos2:
             return cls._parseT2(reader, optional_guid)
         else:
             raise NotImplementedError("Unknown game version")
@@ -253,10 +257,10 @@ class CommonHeader(BaseObject):
         if optional_guid:
             writer.write_data(b"\x00" * 1)
 
-    def unparse(self, writer, byte_count, optional_guid=True):
-        if GAME_VERSION == GameVersion.Reawakened:
+    def unparse(self, writer, decode_context, byte_count, optional_guid=True):
+        if decode_context.game_version == GameVersion.Reawakened:
             return self._unparseR(writer, byte_count, optional_guid)
-        elif GAME_VERSION == GameVersion.Talos2:
+        elif decode_context.game_version == GameVersion.Talos2:
             return self._unparseT2(writer, byte_count, optional_guid)
         else:
             raise NotImplementedError("Unknown game version")
@@ -288,7 +292,7 @@ class ArrayProperty(BaseObject):
         self.elements = elements
 
     @classmethod
-    def _parseR(cls, reader):
+    def _parseR(cls, reader, decode_context):
         non_zero_unknown = reader.read_data(4).decode(encoding="unicode_escape")
         element_type = reader.read_string()
         include_type_header = reader.read_u32()
@@ -323,10 +327,12 @@ class ArrayProperty(BaseObject):
                     f'Warning! Untested array element type "{element_type}". Potential for incorrect parsing / crash'
                 )
             for _ in range(length):
-                print(element_class)
                 elements.append(
                     element_class.parse(
-                        reader, include_header=False, header_data=header_data
+                        reader,
+                        decode_context,
+                        include_header=False,
+                        header_data=header_data,
                     )
                 )
         else:
@@ -339,7 +345,7 @@ class ArrayProperty(BaseObject):
         )
 
     @classmethod
-    def _parseT2(cls, reader):
+    def _parseT2(cls, reader, decode_context):
         # raise NotImplementedError("Array parsing for Talos 2 files not implemented")
         reader.read_u32()  # Byte count - Ignore as we always recalculate
         non_zero_unknown = reader.read_data(4).decode(encoding="unicode_escape")
@@ -376,7 +382,9 @@ class ArrayProperty(BaseObject):
                 )
             for _ in range(length):
                 elements.append(
-                    element_class.parse(reader, include_header=False, header_data=None)
+                    element_class.parse(
+                        reader, decode_context, include_header=False, header_data=None
+                    )
                 )
         else:
             print(f'Unimplemented array property type!: "{element_type}"')
@@ -386,11 +394,11 @@ class ArrayProperty(BaseObject):
         return cls(non_zero_unknown, element_type, None, None, elements)
 
     @classmethod
-    def parse(cls, reader):
-        if GAME_VERSION == GameVersion.Reawakened:
-            return cls._parseR(reader)
-        elif GAME_VERSION == GameVersion.Talos2:
-            return cls._parseT2(reader)
+    def parse(cls, reader, decode_context):
+        if decode_context.game_version == GameVersion.Reawakened:
+            return cls._parseR(reader, decode_context)
+        elif decode_context.game_version == GameVersion.Talos2:
+            return cls._parseT2(reader, decode_context)
         else:
             raise NotImplementedError("Unknown game version")
 
@@ -437,7 +445,7 @@ class ArrayProperty(BaseObject):
                 elements.append(data)
         return cls(unknown, element_type, include_type_header, header_data, elements)
 
-    def _unparseR(self, writer):
+    def _unparseR(self, writer, decode_context):
         if self.element_type == "ByteProperty":  # Hacky ByteProperty fix
             length = len(self.elements[0].data)
         else:
@@ -481,7 +489,10 @@ class ArrayProperty(BaseObject):
                         f'Warning! Untested array element type "{self.element_type}". Potential for incorrect unparsing / crash'
                     )
                 element.unparse(
-                    writer, include_header=False, header_data=self.header_data
+                    writer,
+                    decode_context,
+                    include_header=False,
+                    header_data=self.header_data,
                 )
         else:
             writer.write_data(base64.b64decode(self.elements[0]["data"].encode()))
@@ -493,7 +504,7 @@ class ArrayProperty(BaseObject):
         writer.write_u32(byte_count)
         writer.stream.seek(current_pos, os.SEEK_SET)
 
-    def _unparseT2(self, writer):
+    def _unparseT2(self, writer, decode_context):
         # raise NotImplementedError("Array unparsing for Talos 2 files not implemented")
         if self.element_type == "ByteProperty":  # Hacky ByteProperty fix
             length = len(self.elements[0].data)
@@ -538,7 +549,10 @@ class ArrayProperty(BaseObject):
                         f'Warning! Untested array element type "{self.element_type}". Potential for incorrect unparsing / crash'
                     )
                 element.unparse(
-                    writer, include_header=False, header_data=self.header_data
+                    writer,
+                    decode_context,
+                    include_header=False,
+                    header_data=self.header_data,
                 )
         else:
             writer.write_data(base64.b64decode(self.elements[0]["data"].encode()))
@@ -550,11 +564,11 @@ class ArrayProperty(BaseObject):
         writer.write_u32(byte_count)
         writer.stream.seek(current_pos, os.SEEK_SET)
 
-    def unparse(self, writer):
-        if GAME_VERSION == GameVersion.Reawakened:
-            return self._unparseR(writer)
-        elif GAME_VERSION == GameVersion.Talos2:
-            return self._unparseT2(writer)
+    def unparse(self, writer, decode_context):
+        if decode_context.game_version == GameVersion.Reawakened:
+            return self._unparseR(writer, decode_context)
+        elif decode_context.game_version == GameVersion.Talos2:
+            return self._unparseT2(writer, decode_context)
         else:
             raise NotImplementedError("Unknown game version")
 
@@ -565,19 +579,23 @@ class BoolProperty(BaseObject):
         self.bool_ = bool_
 
     @classmethod
-    def _parseR(cls, reader, include_header=True, header_data=None):
+    def _parseR(cls, reader, decode_context, include_header=True, header_data=None):
         header = (
-            CommonHeader.parse(reader, optional_guid=False) if include_header else None
+            CommonHeader.parse(reader, decode_context, optional_guid=False)
+            if include_header
+            else None
         )
         bool_ = reader.read_u8()
-        if GAME_VERSION == GameVersion.Talos2:
+        if decode_context.game_version == GameVersion.Talos2:
             reader.read_u8()
         return cls(header, bool_)
 
     @classmethod
-    def _parseT2(cls, reader, include_header=True, header_data=None):
+    def _parseT2(cls, reader, decode_context, include_header=True, header_data=None):
         header = (
-            CommonHeader.parse(reader, optional_guid=False) if include_header else None
+            CommonHeader.parse(reader, decode_context, optional_guid=False)
+            if include_header
+            else None
         )
         bool_ = reader.read_u8()
         if include_header:
@@ -585,11 +603,11 @@ class BoolProperty(BaseObject):
         return cls(header, bool_)
 
     @classmethod
-    def parse(cls, reader, include_header=True, header_data=None):
-        if GAME_VERSION == GameVersion.Reawakened:
-            return cls._parseR(reader, include_header, header_data)
-        elif GAME_VERSION == GameVersion.Talos2:
-            return cls._parseT2(reader, include_header, header_data)
+    def parse(cls, reader, decode_context, include_header=True, header_data=None):
+        if decode_context.game_version == GameVersion.Reawakened:
+            return cls._parseR(reader, decode_context, include_header, header_data)
+        elif decode_context.game_version == GameVersion.Talos2:
+            return cls._parseT2(reader, decode_context, include_header, header_data)
         else:
             raise NotImplementedError("Unknown game version")
 
@@ -608,25 +626,25 @@ class BoolProperty(BaseObject):
         bool_ = dictionary["bool"]
         return cls(header, bool_)
 
-    def _unparseR(self, writer, include_header=True, header_data=None):
+    def _unparseR(self, writer, decode_context, include_header=True, header_data=None):
         if include_header:
             # Always 0 bytes
-            self.header.unparse(writer, 0, optional_guid=False)
+            self.header.unparse(writer, decode_context, 0, optional_guid=False)
         writer.write_u8(self.bool_)
 
-    def _unparseT2(self, writer, include_header=True, header_data=None):
+    def _unparseT2(self, writer, decode_context, include_header=True, header_data=None):
         if include_header:
             # Always 0 bytes
-            self.header.unparse(writer, 0, optional_guid=False)
+            self.header.unparse(writer, decode_context, 0, optional_guid=False)
         writer.write_u8(self.bool_)
         if include_header:
             writer.write_u8(0)  # Random extra byte TODO: Maybe save
 
-    def unparse(self, writer, include_header=True, header_data=None):
-        if GAME_VERSION == GameVersion.Reawakened:
-            return self._unparseR(writer, include_header, header_data)
-        elif GAME_VERSION == GameVersion.Talos2:
-            return self._unparseT2(writer, include_header, header_data)
+    def unparse(self, writer, decode_context, include_header=True, header_data=None):
+        if decode_context.game_version == GameVersion.Reawakened:
+            return self._unparseR(writer, decode_context, include_header, header_data)
+        elif decode_context.game_version == GameVersion.Talos2:
+            return self._unparseT2(writer, decode_context, include_header, header_data)
         else:
             raise NotImplementedError("Unknown game version")
 
@@ -637,8 +655,8 @@ class ByteProperty(BaseObject):
         self.byte = byte
 
     @classmethod
-    def parse(cls, reader, include_header=True):
-        header = CommonHeader.parse(reader) if include_header else None
+    def parse(cls, reader, decode_context, include_header=True):
+        header = CommonHeader.parse(reader, decode_context) if include_header else None
         # I don't know why, but bytes are always a string (That probably points to an internal constant)
         byte = reader.read_string()
         return cls(header, byte)
@@ -658,12 +676,12 @@ class ByteProperty(BaseObject):
         byte = dictionary["byte"]
         return cls(header, byte)
 
-    def unparse(self, writer, include_header=True):
+    def unparse(self, writer, decode_context, include_header=True):
         # Basically the same as StrProperty
         if include_header:
             # Write the header with a junk byte count to be replaced once the string length is known
             header_pos = writer.stream.tell()
-            self.header.unparse(writer, 0x41414141)
+            self.header.unparse(writer, decode_context, 0x41414141)
             byte_count_start = writer.stream.tell()
 
         writer.write_string(self.byte)
@@ -673,7 +691,7 @@ class ByteProperty(BaseObject):
             current_pos = writer.stream.tell()
             writer.stream.seek(header_pos, os.SEEK_SET)
             byte_count = current_pos - byte_count_start
-            self.header.unparse(writer, byte_count)
+            self.header.unparse(writer, decode_context, byte_count)
             writer.stream.seek(current_pos, os.SEEK_SET)
 
 
@@ -683,8 +701,8 @@ class DoubleProperty(BaseObject):
         self.double = double
 
     @classmethod
-    def parse(cls, reader, include_header=True):
-        header = CommonHeader.parse(reader) if include_header else None
+    def parse(cls, reader, decode_context, include_header=True):
+        header = CommonHeader.parse(reader, decode_context) if include_header else None
         double = reader.read_f64()
         return cls(header, double)
 
@@ -703,10 +721,10 @@ class DoubleProperty(BaseObject):
         double = dictionary["double"]
         return cls(header, double)
 
-    def unparse(self, writer, include_header=True):
+    def unparse(self, writer, decode_context, include_header=True):
         if include_header:
             # Always 8 bytes
-            self.header.unparse(writer, 8)
+            self.header.unparse(writer, decode_context, 8)
         writer.write_f64(self.double)
 
 
@@ -720,7 +738,7 @@ class EnumProperty(BaseObject):
         self.enum_data = enum_data
 
     @classmethod
-    def _parseR(cls, reader, include_header=True, header_data=None):
+    def _parseR(cls, reader, decode_context, include_header=True, header_data=None):
         if include_header:
             non_zero_unknown1 = reader.read_data(4).decode(
                 encoding="unicode_escape"
@@ -743,7 +761,7 @@ class EnumProperty(BaseObject):
 
         if enum_type in property_string_to_class:
             enum_data = property_string_to_class[enum_type].parse(
-                reader, include_header=include_header
+                reader, decode_context, include_header=include_header
             )
         else:
             print(
@@ -772,10 +790,10 @@ class EnumProperty(BaseObject):
         return cls(non_zero_unknown1, string1, non_zero_unknown2, string2, None, None)
 
     @classmethod
-    def parse(cls, reader, include_header=True, header_data=None):
-        if GAME_VERSION == GameVersion.Reawakened:
-            return cls._parseR(reader, include_header, header_data)
-        elif GAME_VERSION == GameVersion.Talos2:
+    def parse(cls, reader, decode_context, include_header=True, header_data=None):
+        if decode_context.game_version == GameVersion.Reawakened:
+            return cls._parseR(reader, decode_context, include_header, header_data)
+        elif decode_context.game_version == GameVersion.Talos2:
             return cls._parseT2(reader, include_header, header_data)
         else:
             raise NotImplementedError("Unknown game version")
@@ -827,7 +845,7 @@ class EnumProperty(BaseObject):
             )
         return cls(unknown, string1, unknown2, string2, enum_type, enum_data)
 
-    def _unparseR(self, writer, include_header=True, header_data=None):
+    def _unparseR(self, writer, decode_context, include_header=True, header_data=None):
         if include_header:
             writer.write_data(self.unknown.encode())
             writer.write_string(self.string1)
@@ -837,7 +855,9 @@ class EnumProperty(BaseObject):
             writer.write_string(self.enum_type)
 
         if self.enum_type in property_string_to_class:
-            self.enum_data.unparse(writer, include_header=include_header)
+            self.enum_data.unparse(
+                writer, decode_context, include_header=include_header
+            )
 
     def _unparseT2(self, writer, include_header=True, header_data=None):
         # Calculate bytes dynamically
@@ -858,10 +878,10 @@ class EnumProperty(BaseObject):
         writer.write_u32(byte_count)
         writer.stream.seek(current_pos, os.SEEK_SET)
 
-    def unparse(self, writer, include_header=True, header_data=None):
-        if GAME_VERSION == GameVersion.Reawakened:
-            return self._unparseR(writer, include_header, header_data)
-        elif GAME_VERSION == GameVersion.Talos2:
+    def unparse(self, writer, decode_context, include_header=True, header_data=None):
+        if decode_context.game_version == GameVersion.Reawakened:
+            return self._unparseR(writer, decode_context, include_header, header_data)
+        elif decode_context.game_version == GameVersion.Talos2:
             return self._unparseT2(writer, include_header, header_data)
         else:
             raise NotImplementedError("Unknown game version")
@@ -887,8 +907,8 @@ class FloatProperty(BaseObject):
         self.float_ = float_
 
     @classmethod
-    def parse(cls, reader, include_header=True):
-        header = CommonHeader.parse(reader) if include_header else None
+    def parse(cls, reader, decode_context, include_header=True):
+        header = CommonHeader.parse(reader, decode_context) if include_header else None
         float_ = reader.read_f32()
         return cls(header, float_)
 
@@ -907,10 +927,10 @@ class FloatProperty(BaseObject):
         float_ = dictionary["float"]
         return cls(header, float_)
 
-    def unparse(self, writer, include_header=True):
+    def unparse(self, writer, decode_context, include_header=True):
         if include_header:
             # Always 4 bytes
-            self.header.unparse(writer, 4)
+            self.header.unparse(writer, decode_context, 4)
         writer.write_f32(self.float_)
 
 
@@ -920,8 +940,8 @@ class IntProperty(BaseObject):
         self.int_ = int_
 
     @classmethod
-    def parse(cls, reader, include_header=True, header_data=None):
-        header = CommonHeader.parse(reader) if include_header else None
+    def parse(cls, reader, decode_context, include_header=True, header_data=None):
+        header = CommonHeader.parse(reader, decode_context) if include_header else None
         int_ = reader.read_s32()
         return cls(header, int_)
 
@@ -940,10 +960,10 @@ class IntProperty(BaseObject):
         int_ = dictionary["int"]
         return cls(header, int_)
 
-    def unparse(self, writer, include_header=True, header_data=None):
+    def unparse(self, writer, decode_context, include_header=True, header_data=None):
         if include_header:
             # Always 4 bytes
-            self.header.unparse(writer, 4)
+            self.header.unparse(writer, decode_context, 4)
         writer.write_s32(self.int_)
 
 
@@ -971,7 +991,7 @@ class MapProperty(BaseObject):
         self.map_data = map_data
 
     @classmethod
-    def _parseR(cls, reader):
+    def _parseR(cls, reader, decode_context):
         non_zero_unknown = reader.read_data(4).decode(
             encoding="unicode_escape"
         )  # Unknown
@@ -1029,7 +1049,10 @@ class MapProperty(BaseObject):
                 )
             for _ in range(count):
                 key = key_class.parse(
-                    reader, include_header=False, header_data=key_header_data
+                    reader,
+                    decode_context,
+                    include_header=False,
+                    header_data=key_header_data,
                 )
                 if isinstance(key, StructProperty):
                     # Used in one of the actor properties. intpoint struct
@@ -1037,7 +1060,10 @@ class MapProperty(BaseObject):
                     # Souldn't need to be edited anyway
                     key = json.dumps(key.to_dict())
                 value = value_class.parse(
-                    reader, include_header=False, header_data=value_header_data
+                    reader,
+                    decode_context,
+                    include_header=False,
+                    header_data=value_header_data,
                 )
                 map_data.update({key: value})
         else:
@@ -1062,7 +1088,7 @@ class MapProperty(BaseObject):
         )
 
     @classmethod
-    def _parseT2(cls, reader):
+    def _parseT2(cls, reader, decode_context):
         # raise NotImplementedError("Map parsing for Talos 2 files not implemented")
         reader.read_u32()  # Byte count - Ignore as we always recalculate
         non_zero_unknown = reader.read_data(4).decode(
@@ -1120,14 +1146,16 @@ class MapProperty(BaseObject):
                     f'Warning! Untested map element types "{key_type}" & "{value_type}". Potential for incorrect parsing / crash'
                 )
             for _ in range(count):
-                key = key_class.parse(reader, include_header=False, header_data=None)
+                key = key_class.parse(
+                    reader, decode_context, include_header=False, header_data=None
+                )
                 if isinstance(key, StructProperty):
                     # Used in one of the actor properties. intpoint struct
                     # Convert it to a JSON string so it is hashable & python is happy
                     # Souldn't need to be edited anyway
                     key = json.dumps(key.to_dict())
                 value = value_class.parse(
-                    reader, include_header=False, header_data=None
+                    reader, decode_context, include_header=False, header_data=None
                 )
                 map_data.update({key: value})
         else:
@@ -1152,11 +1180,11 @@ class MapProperty(BaseObject):
         )
 
     @classmethod
-    def parse(cls, reader):
-        if GAME_VERSION == GameVersion.Reawakened:
-            return cls._parseR(reader)
-        elif GAME_VERSION == GameVersion.Talos2:
-            return cls._parseT2(reader)
+    def parse(cls, reader, decode_context):
+        if decode_context.game_version == GameVersion.Reawakened:
+            return cls._parseR(reader, decode_context)
+        elif decode_context.game_version == GameVersion.Talos2:
+            return cls._parseT2(reader, decode_context)
         else:
             raise NotImplementedError("Unknown game version")
 
@@ -1222,7 +1250,7 @@ class MapProperty(BaseObject):
             new_map_data,
         )
 
-    def _unparseR(self, writer):
+    def _unparseR(self, writer, decode_context):
         count = len(self.map_data)
 
         writer.write_data(self.unknown.encode())
@@ -1287,10 +1315,16 @@ class MapProperty(BaseObject):
                     # Need to convert it to a struct property to call unparse
                     key = StructProperty.from_dict(json.loads(key))
                 key.unparse(
-                    writer, include_header=False, header_data=self.key_header_data
+                    writer,
+                    decode_context,
+                    include_header=False,
+                    header_data=self.key_header_data,
                 )
                 value.unparse(
-                    writer, include_header=False, header_data=self.value_header_data
+                    writer,
+                    decode_context,
+                    include_header=False,
+                    header_data=self.value_header_data,
                 )
 
         # Hacky fix for data length
@@ -1300,7 +1334,7 @@ class MapProperty(BaseObject):
         writer.write_u32(byte_count)
         writer.stream.seek(current_pos, os.SEEK_SET)
 
-    def _unparseT2(self, writer):
+    def _unparseT2(self, writer, decode_context):
         # raise NotImplementedError("Map unparsing for Talos 2 files not implemented")
         count = len(self.map_data)
 
@@ -1367,10 +1401,16 @@ class MapProperty(BaseObject):
                     # Need to convert it to a struct property to call unparse
                     key = StructProperty.from_dict(json.loads(key))
                 key.unparse(
-                    writer, include_header=False, header_data=self.key_header_data
+                    writer,
+                    decode_context,
+                    include_header=False,
+                    header_data=self.key_header_data,
                 )
                 value.unparse(
-                    writer, include_header=False, header_data=self.value_header_data
+                    writer,
+                    decode_context,
+                    include_header=False,
+                    header_data=self.value_header_data,
                 )
 
         # Hacky fix for data length
@@ -1380,11 +1420,11 @@ class MapProperty(BaseObject):
         writer.write_u32(byte_count)
         writer.stream.seek(current_pos, os.SEEK_SET)
 
-    def unparse(self, writer):
-        if GAME_VERSION == GameVersion.Reawakened:
-            return self._unparseR(writer)
-        elif GAME_VERSION == GameVersion.Talos2:
-            return self._unparseT2(writer)
+    def unparse(self, writer, decode_context):
+        if decode_context.game_version == GameVersion.Reawakened:
+            return self._unparseR(writer, decode_context)
+        elif decode_context.game_version == GameVersion.Talos2:
+            return self._unparseT2(writer, decode_context)
         else:
             raise NotImplementedError("Unknown game version")
 
@@ -1396,7 +1436,7 @@ class NamedProperty(BaseObject):
         self.property_object = property_object
 
     @classmethod
-    def parse(cls, reader):
+    def parse(cls, reader, decode_context):
         # print(f"Named Property @ {reader.stream.tell():#2x}")
         name = reader.read_string()
         if name == "None":
@@ -1407,7 +1447,9 @@ class NamedProperty(BaseObject):
 
         property_type = reader.read_string()
         if property_type in property_string_to_class:
-            property_object = property_string_to_class[property_type].parse(reader)
+            property_object = property_string_to_class[property_type].parse(
+                reader, decode_context
+            )
         else:
             print(
                 f'Unimplemented named property type!: @{reader.stream.tell():#2x} "{property_type}"'
@@ -1441,11 +1483,11 @@ class NamedProperty(BaseObject):
             )
         return cls(name, property_type, property_object)
 
-    def unparse(self, writer):
+    def unparse(self, writer, decode_context):
         writer.write_string(self.name)
         writer.write_string(self.property_type)
         if self.property_type in property_string_to_class:
-            self.property_object.unparse(writer)
+            self.property_object.unparse(writer, decode_context)
         else:
             print(f'Unimplemented named property type!: "{self.property_type}"')
             raise NotImplementedError(
@@ -1459,9 +1501,9 @@ class ObjectProperty(BaseObject):
         self.object_ = object_
 
     @classmethod
-    def parse(cls, reader, include_header=True, header_data=None):
-        header = CommonHeader.parse(reader) if include_header else None
-        obj = ScriptObject.parse(reader)
+    def parse(cls, reader, decode_context, include_header=True, header_data=None):
+        header = CommonHeader.parse(reader, decode_context) if include_header else None
+        obj = ScriptObject.parse(reader, decode_context)
         return cls(header, obj)
 
     def to_dict(self):
@@ -1479,20 +1521,20 @@ class ObjectProperty(BaseObject):
         object_ = ScriptObject.from_dict(dictionary)
         return cls(header, object_)
 
-    def unparse(self, writer, include_header=True, header_data=None):
+    def unparse(self, writer, decode_context, include_header=True, header_data=None):
         if include_header:
             # Write the header with a junk byte count to be replaced once the object length is known
             header_pos = writer.stream.tell()
-            self.header.unparse(writer, 0x41414141)
+            self.header.unparse(writer, decode_context, 0x41414141)
             byte_count_start = writer.stream.tell()
-        self.object_.unparse(writer)
+        self.object_.unparse(writer, decode_context)
 
         if include_header:
             # Calculate bytes dynamically
             current_pos = writer.stream.tell()
             writer.stream.seek(header_pos, os.SEEK_SET)
             byte_count = current_pos - byte_count_start
-            self.header.unparse(writer, byte_count)
+            self.header.unparse(writer, decode_context, byte_count)
             writer.stream.seek(current_pos, os.SEEK_SET)
 
 
@@ -1504,7 +1546,7 @@ class ObjectUserContentTypes(IntEnum):
     AssetPath = 0x07
     ScriptPath = 0x08
     DatabasePath = 0x09
-    CachedAssetPath = 0x0b
+    CachedAssetPath = 0x0B
 
 
 class ScriptObject(BaseObject):
@@ -1543,7 +1585,7 @@ class ScriptObject(BaseObject):
                 return prop
 
     @classmethod
-    def parse(cls, reader):
+    def parse(cls, reader, decode_context):
         special = reader.read_u8()
         if special == 0:
             # Object ends
@@ -1556,11 +1598,11 @@ class ScriptObject(BaseObject):
         user_content_args = {}
         if user_content_type == ObjectUserContentTypes.ScriptPath:
             script_path = reader.read_string()
-            SCRIPT_PATH_CACHE.append(script_path)
+            decode_context.script_path_cache.append(script_path)
             user_content_args.update({"script_path": script_path})
         elif user_content_type == ObjectUserContentTypes.AssetPath:
             asset_path = reader.read_string()
-            ASSET_PATH_CACHE.append(asset_path)
+            decode_context.asset_path_cache.append(asset_path)
             user_content_args.update({"asset_path": asset_path})
         elif user_content_type == ObjectUserContentTypes.CachedScriptPath:
             cache_index = reader.read_u32()
@@ -1571,7 +1613,7 @@ class ScriptObject(BaseObject):
         elif user_content_type == ObjectUserContentTypes.DatabasePath:
             database_path = reader.read_string()
             database_index = reader.read_s32()
-            DATABASE_PATH_CACHE.append(database_path)
+            decode_context.database_path_cache.append(database_path)
             user_content_args.update({"database_path": database_path})
             user_content_args.update({"database_index": database_index})
         elif user_content_type == ObjectUserContentTypes.CachedDatabasePath:
@@ -1594,28 +1636,26 @@ class ScriptObject(BaseObject):
         # Otherwise it is the least significant byte from the length of a peroperty name for the
         # CustomEpisode/CustomLevel script, which can never be a multiple of 256 (false positive)
         # Use the first instance of this as a way to determine which game the file is from
-        global GAME_VERSION
-        if GAME_VERSION == GameVersion.Unknown and special == 0x2:
-            GAME_VERSION = (
+        if decode_context.game_version == GameVersion.Unknown and special == 0x2:
+            decode_context.game_version = (
                 GameVersion.Reawakened
                 if reader.peek(1) == b"\x00"
                 else GameVersion.Talos2
             )
 
-        # TODO: Split to separate Reawakened & Talos2 parse functions
-        # Extra padding sometimes, noticed it's the case when `special` == 0x2
-        if GAME_VERSION == GameVersion.Reawakened and special == 0x2:
+        # Extra padding sometimes, noticed it's only the case when `special` == 0x2
+        if decode_context.game_version == GameVersion.Reawakened and special == 0x2:
             reader.read_data(1)
 
         # Guessing this determines if there are named properties
         named_properties = []
         if special == 0x02:
             while True:
-                prop = NamedProperty.parse(reader)
+                prop = NamedProperty.parse(reader, decode_context)
                 if prop == None:
                     break
                 named_properties.append(prop)
-        elif special not in [0x0b,0x09,0x08,0x07,0x06,0x04,0x03]:
+        elif special not in [0x0B, 0x09, 0x08, 0x07, 0x06, 0x04, 0x03]:
             print(f"Unknown if special value has named properties: {special:#2x}")
 
         return cls(
@@ -1631,19 +1671,19 @@ class ScriptObject(BaseObject):
         ret.update({"user_content_type": self.user_content_type})
         if hasattr(self, "script_path"):
             ret.update({"script_path": self.script_path})
-        if hasattr(self,"asset_path"):
+        if hasattr(self, "asset_path"):
             ret.update({"asset_path": self.asset_path})
-        if hasattr(self,"cache_index"):
+        if hasattr(self, "cache_index"):
             ret.update({"cache_index": self.cache_index})
-        if hasattr(self,"target_actor_index"):
+        if hasattr(self, "target_actor_index"):
             ret.update({"target_actor_index": self.target_actor_index})
-        if hasattr(self,"database_path"):
+        if hasattr(self, "database_path"):
             ret.update({"database_path": self.database_path})
-        if hasattr(self,"database_cache_index"):
+        if hasattr(self, "database_cache_index"):
             ret.update({"database_cache_index": self.database_cache_index})
-        if hasattr(self,"database_index"):
+        if hasattr(self, "database_index"):
             ret.update({"database_index": self.database_index})
-        if hasattr(self,"asset_index"):
+        if hasattr(self, "asset_index"):
             ret.update({"asset_index": self.asset_index})
         if self.named_properties:
             named_properties = {}
@@ -1664,12 +1704,16 @@ class ScriptObject(BaseObject):
         elif user_content_type == ObjectUserContentTypes.CachedScriptPath:
             user_content_args.update({"cache_index": dictionary["cache_index"]})
         elif user_content_type == ObjectUserContentTypes.TargetActor:
-            user_content_args.update({"target_actor_index": dictionary["target_actor_index"]})
+            user_content_args.update(
+                {"target_actor_index": dictionary["target_actor_index"]}
+            )
         elif user_content_type == ObjectUserContentTypes.DatabasePath:
             user_content_args.update({"database_path": dictionary["database_path"]})
             user_content_args.update({"database_index": dictionary["database_index"]})
         elif user_content_type == ObjectUserContentTypes.CachedDatabasePath:
-            user_content_args.update({"database_cache_index": dictionary["database_cache_index"]})
+            user_content_args.update(
+                {"database_cache_index": dictionary["database_cache_index"]}
+            )
             user_content_args.update({"database_index": dictionary["database_index"]})
         elif user_content_type == ObjectUserContentTypes.CachedAssetPath:
             user_content_args.update({"asset_index": dictionary["asset_index"]})
@@ -1686,7 +1730,7 @@ class ScriptObject(BaseObject):
             named_properties,
         )
 
-    def unparse(self, writer):
+    def unparse(self, writer, decode_context):
         writer.write_u8(self.special)
         if self.special == 0:
             # Object ends
@@ -1717,17 +1761,20 @@ class ScriptObject(BaseObject):
         # CustomEpisode/CustomLevel script, which can never be a multiple of 256 (false positive)
         # Use the first instance of this as a way to determine which game the file is from
 
-        # TODO: Split to separate Reawakened & Talos2 parse functions
-        # Extra padding sometimes, noticed it's the case when `special` == 0x2
-        if GAME_VERSION == GameVersion.Reawakened and self.special == 0x02:
+        # Extra padding sometimes, noticed it's only the case when `special` == 0x2
+        if (
+            decode_context.game_version == GameVersion.Reawakened
+            and self.special == 0x02
+        ):
             writer.write_data(b"\x00")
 
         if self.special == 0x02:
             for prop in self.named_properties:
-                prop.unparse(writer)
+                prop.unparse(writer, decode_context)
             # Write the `None` property
             writer.write_string("None")
             writer.write_data(b"\x00" * 4)
+
 
 # TODO: Same as regular ObjectUserContentTypes
 class SoftObjectUserContentTypes(IntEnum):
@@ -1758,15 +1805,15 @@ class SoftObjectProperty(BaseObject):
             self.database_index = user_content_args["database_index"]
 
     @classmethod
-    def parse(cls, reader, include_header=True):
-        header = CommonHeader.parse(reader) if include_header else None
+    def parse(cls, reader, decode_context, include_header=True):
+        header = CommonHeader.parse(reader, decode_context) if include_header else None
         user_content_type = SoftObjectUserContentTypes(reader.read_u8())
 
         user_content_args = {}
         if user_content_type == SoftObjectUserContentTypes.Database:
             database_path = reader.read_string()
             database_index = reader.read_s32()
-            SOFT_OBJECT_ASSET_PATH_CACHE.append(database_path)
+            decode_context.soft_object_asset_path_cache.append(database_path)
             user_content_args.update({"database_path": database_path})
             user_content_args.update({"database_index": database_index})
         elif user_content_type == SoftObjectUserContentTypes.DirectPath:
@@ -1829,7 +1876,9 @@ class SoftObjectProperty(BaseObject):
             user_content_args.update({"asset_name": dictionary["asset_name"]})
             user_content_args.update({"subobject": dictionary["subobject"]})
         elif user_content_type == SoftObjectUserContentTypes.CachedDatabase:
-            user_content_args.update({"database_cache_index": dictionary["database_cache_index"]})
+            user_content_args.update(
+                {"database_cache_index": dictionary["database_cache_index"]}
+            )
             user_content_args.update({"database_index": dictionary["database_index"]})
         return cls(
             header,
@@ -1837,11 +1886,11 @@ class SoftObjectProperty(BaseObject):
             user_content_args,
         )
 
-    def unparse(self, writer, include_header=True):
+    def unparse(self, writer, decode_context, include_header=True):
         if include_header:
             # Write the header with a junk byte count to be replaced once the object length is known
             header_pos = writer.stream.tell()
-            self.header.unparse(writer, 0x41414141)
+            self.header.unparse(writer, decode_context, 0x41414141)
             byte_count_start = writer.stream.tell()
 
         writer.write_u8(self.user_content_type)
@@ -1861,7 +1910,7 @@ class SoftObjectProperty(BaseObject):
             current_pos = writer.stream.tell()
             writer.stream.seek(header_pos, os.SEEK_SET)
             byte_count = current_pos - byte_count_start
-            self.header.unparse(writer, byte_count)
+            self.header.unparse(writer, decode_context, byte_count)
             writer.stream.seek(current_pos, os.SEEK_SET)
 
 
@@ -1871,8 +1920,8 @@ class StrProperty(BaseObject):
         self.string = string
 
     @classmethod
-    def parse(cls, reader, include_header=True, header_data=None):
-        header = CommonHeader.parse(reader) if include_header else None
+    def parse(cls, reader, decode_context, include_header=True, header_data=None):
+        header = CommonHeader.parse(reader, decode_context) if include_header else None
         string = reader.read_string()
         return cls(header, string)
 
@@ -1891,11 +1940,11 @@ class StrProperty(BaseObject):
         string = dictionary["string"]
         return cls(header, string)
 
-    def unparse(self, writer, include_header=True, header_data=None):
+    def unparse(self, writer, decode_context, include_header=True, header_data=None):
         if include_header:
             # Write the header with a junk byte count to be replaced once the string length is known
             header_pos = writer.stream.tell()
-            self.header.unparse(writer, 0x41414141)
+            self.header.unparse(writer, decode_context, 0x41414141)
             byte_count_start = writer.stream.tell()
 
         writer.write_string(self.string)
@@ -1905,7 +1954,7 @@ class StrProperty(BaseObject):
             current_pos = writer.stream.tell()
             writer.stream.seek(header_pos, os.SEEK_SET)
             byte_count = current_pos - byte_count_start
-            self.header.unparse(writer, byte_count)
+            self.header.unparse(writer, decode_context, byte_count)
             writer.stream.seek(current_pos, os.SEEK_SET)
 
 
@@ -1933,7 +1982,7 @@ class StructProperty(BaseObject):
         self.header = header
 
     @classmethod
-    def _parseR(cls, reader, include_header=True, header_data=None):
+    def _parseR(cls, reader, decode_context, include_header=True, header_data=None):
         if include_header:
             magic = reader.read_u32()
             struct_name = reader.read_string()
@@ -1990,7 +2039,7 @@ class StructProperty(BaseObject):
                 )
             named_properties = []
             while True:
-                prop = NamedProperty.parse(reader)
+                prop = NamedProperty.parse(reader, decode_context)
                 if prop == None:
                     # Hack for None type having no extra bytes
                     reader.stream.seek(-4, os.SEEK_CUR)
@@ -2009,9 +2058,11 @@ class StructProperty(BaseObject):
         )
 
     @classmethod
-    def _parseT2(cls, reader, include_header=True, header_data=None):
+    def _parseT2(cls, reader, decode_context, include_header=True, header_data=None):
         header = (
-            CommonHeader.parse(reader, optional_guid=False) if include_header else None
+            CommonHeader.parse(reader, decode_context, optional_guid=False)
+            if include_header
+            else None
         )
         struct_name = reader.read_string()
         unknown = base64.b64encode(reader.read_data(0x11)).decode()
@@ -2039,7 +2090,7 @@ class StructProperty(BaseObject):
             #     )
             named_properties = []
             while True:
-                prop = NamedProperty.parse(reader)
+                prop = NamedProperty.parse(reader, decode_context)
                 if prop == None:
                     # Hack for None type having no extra bytes
                     reader.stream.seek(-4, os.SEEK_CUR)
@@ -2051,11 +2102,11 @@ class StructProperty(BaseObject):
         )
 
     @classmethod
-    def parse(cls, reader, include_header=True, header_data=None):
-        if GAME_VERSION == GameVersion.Reawakened:
-            return cls._parseR(reader, include_header, header_data)
-        elif GAME_VERSION == GameVersion.Talos2:
-            return cls._parseT2(reader, include_header, header_data)
+    def parse(cls, reader, decode_context, include_header=True, header_data=None):
+        if decode_context.game_version == GameVersion.Reawakened:
+            return cls._parseR(reader, decode_context, include_header, header_data)
+        elif decode_context.game_version == GameVersion.Talos2:
+            return cls._parseT2(reader, decode_context, include_header, header_data)
         else:
             raise NotImplementedError("Unknown game version")
 
@@ -2147,7 +2198,7 @@ class StructProperty(BaseObject):
             header=header,
         )
 
-    def _unparseR(self, writer, include_header=True, header_data=None):
+    def _unparseR(self, writer, decode_context, include_header=True, header_data=None):
         if include_header:
             writer.write_u32(self.magic)
             writer.write_string(self.struct_name)
@@ -2186,7 +2237,7 @@ class StructProperty(BaseObject):
             )
         else:
             for prop in self.data:
-                prop.unparse(writer)
+                prop.unparse(writer, decode_context)
             # Write the `None` property
             writer.write_string("None")
 
@@ -2198,11 +2249,11 @@ class StructProperty(BaseObject):
             writer.write_u32(byte_count)
             writer.stream.seek(current_pos, os.SEEK_SET)
 
-    def _unparseT2(self, writer, include_header=True, header_data=None):
+    def _unparseT2(self, writer, decode_context, include_header=True, header_data=None):
         if include_header:
             # Write the header with a junk byte count to be replaced once the string length is known
             header_pos = writer.stream.tell()
-            self.header.unparse(writer, 0x41414141, optional_guid=False)
+            self.header.unparse(writer, decode_context, 0x41414141, optional_guid=False)
         writer.write_string(self.struct_name)
         writer.write_data(base64.b64decode(self.unknown))
         byte_count_start = writer.stream.tell()
@@ -2226,7 +2277,7 @@ class StructProperty(BaseObject):
             )
         else:
             for prop in self.data:
-                prop.unparse(writer)
+                prop.unparse(writer, decode_context)
             # Write the `None` property
             writer.write_string("None")
 
@@ -2235,14 +2286,14 @@ class StructProperty(BaseObject):
             current_pos = writer.stream.tell()
             writer.stream.seek(header_pos, os.SEEK_SET)
             byte_count = current_pos - byte_count_start
-            self.header.unparse(writer, byte_count, optional_guid=False)
+            self.header.unparse(writer, decode_context, byte_count, optional_guid=False)
             writer.stream.seek(current_pos, os.SEEK_SET)
 
-    def unparse(self, writer, include_header=True, header_data=None):
-        if GAME_VERSION == GameVersion.Reawakened:
-            return self._unparseR(writer, include_header, header_data)
-        elif GAME_VERSION == GameVersion.Talos2:
-            return self._unparseT2(writer, include_header, header_data)
+    def unparse(self, writer, decode_context, include_header=True, header_data=None):
+        if decode_context.game_version == GameVersion.Reawakened:
+            return self._unparseR(writer, decode_context, include_header, header_data)
+        elif decode_context.game_version == GameVersion.Talos2:
+            return self._unparseT2(writer, decode_context, include_header, header_data)
         else:
             raise NotImplementedError("Unknown game version")
 
@@ -2274,9 +2325,9 @@ class TextProperty(BaseObject):
         self.text = text
 
     @classmethod
-    def parse(cls, reader, include_header=True):
-        header = CommonHeader.parse(reader) if include_header else None
-        unknown1 = reader.read_u32()
+    def parse(cls, reader, decode_context, include_header=True):
+        header = CommonHeader.parse(reader, decode_context) if include_header else None
+        unknown1 = reader.read_u32()  # Reawakened: 0x12 - Talos2: 0x2
         unknown2 = reader.read_u8()
         assert unknown2 == 0xFF
         text_exists = reader.read_u32()
@@ -2304,11 +2355,11 @@ class TextProperty(BaseObject):
         text = dictionary["text"]
         return cls(header, unknown1, unknown2, text)
 
-    def unparse(self, writer, include_header=True):
+    def unparse(self, writer, decode_context, include_header=True):
         if include_header:
             # Write the header with a junk byte count to be replaced once the string length is known
             header_pos = writer.stream.tell()
-            self.header.unparse(writer, 0x41414141)
+            self.header.unparse(writer, decode_context, 0x41414141)
             byte_count_start = writer.stream.tell()
 
         writer.write_u32(self.unknown1)
@@ -2324,7 +2375,7 @@ class TextProperty(BaseObject):
             current_pos = writer.stream.tell()
             writer.stream.seek(header_pos, os.SEEK_SET)
             byte_count = current_pos - byte_count_start
-            self.header.unparse(writer, byte_count)
+            self.header.unparse(writer, decode_context, byte_count)
             writer.stream.seek(current_pos, os.SEEK_SET)
 
 
@@ -2332,34 +2383,18 @@ class TextProperty(BaseObject):
 class Level:
     def __init__(
         self,
-        game_version,
+        main_decode_context,
+        actor_properties_decode_context,
         level_script,
-        main_script_path_cache,
-        actor_properties_script_path_cache,
-        actor_properties_database_path_cache,
-        actor_properties_asset_path_cache,
-        actor_properties_soft_object_asset_path_cache,
     ):
-        self.game_version = game_version
+        self.main_decode_context = main_decode_context
+        self.actor_properties_decode_context = actor_properties_decode_context
         self.level_script = level_script
-        self.main_script_path_cache = main_script_path_cache
-        self.actor_properties_script_path_cache = actor_properties_script_path_cache
-        self.actor_properties_database_path_cache = actor_properties_database_path_cache
-        self.actor_properties_asset_path_cache = actor_properties_asset_path_cache
-        self.actor_properties_soft_object_asset_path_cache = actor_properties_soft_object_asset_path_cache
 
     def __repr__(self):
         return f"{self.level_script}"
 
-    def _actor_properties_fix(level_script):
-        global SCRIPT_PATH_CACHE
-        global DATABASE_PATH_CACHE
-        global ASSET_PATH_CACHE
-        global SOFT_OBJECT_ASSET_PATH_CACHE
-        SCRIPT_PATH_CACHE = []
-        DATABASE_PATH_CACHE = []
-        ASSET_PATH_CACHE = []
-        SOFT_OBJECT_ASSET_PATH_CACHE = []
+    def _actor_properties_fix(level_script, decode_context):
         scene = level_script.get_property("Scene")
         if scene:
             actor_properties = scene.property_object.object_.get_property(
@@ -2377,47 +2412,38 @@ class Level:
                     # Read scripts until there are no more bytes
                     while reader.stream.peek(1):
                         print(f"Script @ {reader.stream.tell():#2x}")
-                        script = ObjectProperty.parse(reader, include_header=False)
+                        script = ObjectProperty.parse(
+                            reader, decode_context=decode_context, include_header=False
+                        )
                         scripts.append(script)
                 actor_properties.elements = scripts
 
     @classmethod
     def from_file(cls, level_path):
-        global SCRIPT_PATH_CACHE
-        SCRIPT_PATH_CACHE = []
+        main_decode_context = DecodeContext()
         with open(level_path, "rb") as f:
             reader = BinaryReader(f)
             # Unknown what the first 8 bytes are. Always 0
             reader.read_data(8)
-            level_script = ScriptObject.parse(reader)
-        main_script_path_cache = SCRIPT_PATH_CACHE
+            level_script = ScriptObject.parse(
+                reader, decode_context=main_decode_context
+            )
 
         # Replace the ActorProperty ArrayOfBytes object with the parsed script objects
         # Actor properties use a separate string cache (likely because Talos parses them after the main script)
         # Do it here so we can save the actor property cached strings separately
-        cls._actor_properties_fix(level_script)
-        game_version = GAME_VERSION
-        actor_properties_script_path_cache = SCRIPT_PATH_CACHE
-        actor_properties_soft_object_asset_path_cache = SOFT_OBJECT_ASSET_PATH_CACHE
-        actor_properties_database_path_cache = DATABASE_PATH_CACHE
-        actor_properties_asset_path_cache = ASSET_PATH_CACHE
+        actor_properties_decode_context = DecodeContext()
+        actor_properties_decode_context.game_version = main_decode_context.game_version
+        cls._actor_properties_fix(level_script, actor_properties_decode_context)
+
         return cls(
-            game_version,
+            main_decode_context,
+            actor_properties_decode_context,
             level_script,
-            main_script_path_cache,
-            actor_properties_script_path_cache,
-            actor_properties_database_path_cache,
-            actor_properties_asset_path_cache,
-            actor_properties_soft_object_asset_path_cache,
         )
 
     @classmethod
     def from_dict(cls, dictionary):
-        global GAME_VERSION
-        global SCRIPT_PATH_CACHE
-        global DATABASE_PATH_CACHE
-        global ASSET_PATH_CACHE
-        global SOFT_OBJECT_ASSET_PATH_CACHE
         level = dictionary
         # # Dump b64 encoded actor properties to file
         # scene = level["level_script"]["named_properties"]["Scene"]
@@ -2429,21 +2455,34 @@ class Level:
         #         f.write(actor_prop_bytes)
         # exit(1)
 
+        # Get the decode contexts
+        main_decode_context = DecodeContext()
+        main_decode_context.game_version = level["game_version"]
+        main_decode_context.script_path_cache = level["main_script_path_cache"]
+
+        actor_properties_decode_context = DecodeContext()
+        actor_properties_decode_context.game_version = level["game_version"]
+        actor_properties_decode_context.script_path_cache = level[
+            "actor_properties_script_path_cache"
+        ]
+        actor_properties_decode_context.database_path_cache = level[
+            "actor_properties_database_path_cache"
+        ]
+        actor_properties_decode_context.asset_path_cache = level[
+            "actor_properties_asset_path_cache"
+        ]
+        actor_properties_decode_context.soft_object_asset_path_cache = level[
+            "actor_properties_soft_object_asset_path_cache"
+        ]
+
         # Parse the ActorProperty array to an ArrayOfBytes object to correctly read the JSON
-        # Setup the decode context to be actor properties
-        # Global caches
-        GAME_VERSION = level["game_version"]
-        SCRIPT_PATH_CACHE = level["actor_properties_script_path_cache"]
-        DATABASE_PATH_CACHE = level["actor_properties_database_path_cache"]
-        ASSET_PATH_CACHE = level["actor_properties_asset_path_cache"]
-        SOFT_OBJECT_ASSET_PATH_CACHE = level["actor_properties_soft_object_asset_path_cache"]
         # Save the parsed actor properties so we don't need to re-parse them
         scene = level["level_script"]["named_properties"]["Scene"]
         if "named_properties" in scene:
             actor_properties = scene["named_properties"]["ActorProperties"]
-            actor_properties_scripts = []
+            saved_actor_properties_scripts = []
             for script in actor_properties["elements"]:
-                actor_properties_scripts.append(
+                saved_actor_properties_scripts.append(
                     ObjectProperty.from_dict(script, include_header=False)
                 )
 
@@ -2453,25 +2492,17 @@ class Level:
                 writer = BinaryWriter(buf_writer)
                 # Unknown what the first 8 bytes are. Always 0
                 writer.write_data(b"\x00" * 8)
-                for script in actor_properties_scripts:
-                    script.unparse(writer, include_header=False)
+                for script in saved_actor_properties_scripts:
+                    script.unparse(
+                        writer, actor_properties_decode_context, include_header=False
+                    )
                 writer.stream.flush()
                 actor_prop_bytes = buffer.getvalue()
             actor_properties["elements"] = [
                 {"data": base64.b64encode(actor_prop_bytes).decode()}
             ]
 
-        # Setup the decode context to be for the main script
-        # Global caches
-        SCRIPT_PATH_CACHE = level["main_script_path_cache"]
         level_script = ScriptObject.from_dict(level["level_script"])
-
-        game_version = level["game_version"]
-        main_script_path_cache = level["main_script_path_cache"]
-        actor_properties_script_path_cache = level["actor_properties_script_path_cache"]
-        actor_properties_database_path_cache = level["actor_properties_database_path_cache"]
-        actor_properties_asset_path_cache = level["actor_properties_asset_path_cache"]
-        actor_properties_soft_object_asset_path_cache = level["actor_properties_soft_object_asset_path_cache"]
 
         # Restore the parsed actor properties so we don't need to re-parse them
         scene = level_script.get_property("Scene")
@@ -2481,25 +2512,22 @@ class Level:
             )
             if actor_properties:
                 actor_properties = actor_properties.property_object
-                actor_properties.elements = actor_properties_scripts
+                actor_properties.elements = saved_actor_properties_scripts
+
         return cls(
-            game_version,
+            main_decode_context,
+            actor_properties_decode_context,
             level_script,
-            main_script_path_cache,
-            actor_properties_script_path_cache,
-            actor_properties_database_path_cache,
-            actor_properties_asset_path_cache,
-            actor_properties_soft_object_asset_path_cache,
         )
 
     def to_json(self, json_path):
         level = {
-            "game_version": self.game_version,
-            "main_script_path_cache": self.main_script_path_cache,
-            "actor_properties_script_path_cache": self.actor_properties_script_path_cache,
-            "actor_properties_database_path_cache": self.actor_properties_database_path_cache,
-            "actor_properties_asset_path_cache": self.actor_properties_asset_path_cache,
-            "actor_properties_soft_object_asset_path_cache": self.actor_properties_soft_object_asset_path_cache,
+            "game_version": self.main_decode_context.game_version,
+            "main_script_path_cache": self.main_decode_context.script_path_cache,
+            "actor_properties_script_path_cache": self.actor_properties_decode_context.script_path_cache,
+            "actor_properties_database_path_cache": self.actor_properties_decode_context.database_path_cache,
+            "actor_properties_asset_path_cache": self.actor_properties_decode_context.asset_path_cache,
+            "actor_properties_soft_object_asset_path_cache": self.actor_properties_decode_context.soft_object_asset_path_cache,
             "level_script": self.level_script.to_dict(),
         }
         with open(json_path, "wb") as f:
@@ -2520,7 +2548,11 @@ class Level:
                     # Unknown what the first 8 bytes are. Always 0
                     writer.write_data(b"\x00" * 8)
                     for script in actor_properties.elements:
-                        script.unparse(writer, include_header=False)
+                        script.unparse(
+                            writer,
+                            self.actor_properties_decode_context,
+                            include_header=False,
+                        )
                     writer.stream.flush()
                     actor_prop_bytes = buffer.getvalue()
                 # Save a copy in case the program continues to execute & modify data after writing to a file
@@ -2531,7 +2563,7 @@ class Level:
             writer = BinaryWriter(f)
             # Unknown what the first 8 bytes are. Always 0
             writer.write_data(b"\x00" * 8)
-            self.level_script.unparse(writer)
+            self.level_script.unparse(writer, self.main_decode_context)
         # Restore the copy in case the program continues to execute & modify data after writing to a file
         scene = self.level_script.get_property("Scene")
         if scene:
@@ -2545,44 +2577,36 @@ class Level:
 
 # Class for episode files
 class Episode:
-    def __init__(self, game_version, episode_script, SCRIPT_PATH_CACHE):
-        self.game_version = game_version
+    def __init__(self, decode_context, episode_script):
+        self.decode_context = decode_context
         self.episode_script = episode_script
-        self.SCRIPT_PATH_CACHE = SCRIPT_PATH_CACHE
 
     def __repr__(self):
         return f"{self.episode_script}"
 
     @classmethod
     def from_file(cls, episode_path):
-        global SCRIPT_PATH_CACHE
-        SCRIPT_PATH_CACHE = []
+        decode_context = DecodeContext()
         with open(episode_path, "rb") as f:
             reader = BinaryReader(f)
             # Unknown what the first 8 bytes are. Always 0
             reader.read_data(8)
-            episode_script = ScriptObject.parse(reader)
-        game_version = GAME_VERSION
-        SCRIPT_PATH_CACHE = SCRIPT_PATH_CACHE
-        return cls(game_version, episode_script, SCRIPT_PATH_CACHE)
+            episode_script = ScriptObject.parse(reader, decode_context=decode_context)
+        return cls(decode_context, episode_script)
 
     @classmethod
     def from_dict(cls, dictionary):
-        global GAME_VERSION
-        global SCRIPT_PATH_CACHE
-        SCRIPT_PATH_CACHE = []
+        decode_context = DecodeContext()
         episode = dictionary
-        GAME_VERSION = episode["game_version"]
-        SCRIPT_PATH_CACHE = episode["SCRIPT_PATH_CACHE"]
+        decode_context.game_version = episode["game_version"]
+        decode_context.script_path_cache = episode["script_path_cache"]
         episode_script = ScriptObject.from_dict(episode["episode_script"])
-        game_version = GAME_VERSION
-        SCRIPT_PATH_CACHE = SCRIPT_PATH_CACHE
-        return cls(game_version, episode_script, SCRIPT_PATH_CACHE)
+        return cls(decode_context, episode_script)
 
     def to_json(self, json_path):
         episode = {
-            "game_version": self.game_version,
-            "SCRIPT_PATH_CACHE": self.SCRIPT_PATH_CACHE,
+            "game_version": self.decode_context.game_version,
+            "script_path_cache": self.decode_context.script_path_cache,
             "episode_script": self.episode_script.to_dict(),
         }
         with open(json_path, "wb") as f:
@@ -2593,7 +2617,7 @@ class Episode:
             writer = BinaryWriter(f)
             # Unknown what the first 8 bytes are. Always 0
             writer.write_data(b"\x00" * 8)
-            self.episode_script.unparse(writer)
+            self.episode_script.unparse(writer, self.decode_context)
 
 
 # List of classes that I have tested with array
@@ -2715,6 +2739,7 @@ def main():
             file = Episode.from_dict(file_data)
         else:
             print("Unknown JSON file")
+
         file.to_file(output_path)
     elif convert_type == "to_json":
         # If converting to json (output is .json), take the input_path extension
