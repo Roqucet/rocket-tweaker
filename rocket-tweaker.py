@@ -26,13 +26,16 @@ from enum import IntEnum
 CACHED_STRINGS = []
 SOFT_OBJECT_CACHED_STRINGS = []
 
+
 class GameVersion(IntEnum):
     Unknown = -1
     Reawakened = 1
     Talos2 = 2
     Talos3 = 3
 
+
 GAME_VERSION = GameVersion.Unknown
+
 
 class BinaryReader:
     def __init__(self, stream):
@@ -372,18 +375,14 @@ class ArrayProperty(BaseObject):
                 )
             for _ in range(length):
                 elements.append(
-                    element_class.parse(
-                        reader, include_header=False, header_data=None
-                    )
+                    element_class.parse(reader, include_header=False, header_data=None)
                 )
         else:
             print(f'Unimplemented array property type!: "{element_type}"')
             data = base64.b64encode(reader.read_data(length))
             elements.append({"data": data.decode()})
 
-        return cls(
-            non_zero_unknown, element_type, None, None, elements
-        )
+        return cls(non_zero_unknown, element_type, None, None, elements)
 
     @classmethod
     def parse(cls, reader):
@@ -393,7 +392,6 @@ class ArrayProperty(BaseObject):
             return cls._parseT2(reader)
         else:
             raise NotImplementedError("Unknown game version")
-        
 
     def to_dict(self):
         ret = {}
@@ -581,7 +579,7 @@ class BoolProperty(BaseObject):
             CommonHeader.parse(reader, optional_guid=False) if include_header else None
         )
         bool_ = reader.read_u8()
-        reader.read_u8()    # Random extra byte in Talos 2?
+        reader.read_u8()  # Random extra byte in Talos 2?
         return cls(header, bool_)
 
     @classmethod
@@ -619,7 +617,7 @@ class BoolProperty(BaseObject):
             # Always 0 bytes
             self.header.unparse(writer, 0, optional_guid=False)
         writer.write_u8(self.bool_)
-        writer.write_u8(0)      # Random extra byte TODO: Maybe save
+        writer.write_u8(0)  # Random extra byte TODO: Maybe save
 
     def unparse(self, writer, include_header=True, header_data=None):
         if GAME_VERSION == GameVersion.Reawakened:
@@ -1068,9 +1066,7 @@ class MapProperty(BaseObject):
                     f'Warning! Untested map element types "{key_type}" & "{value_type}". Potential for incorrect parsing / crash'
                 )
             for _ in range(count):
-                key = key_class.parse(
-                    reader, include_header=False, header_data=None
-                )
+                key = key_class.parse(reader, include_header=False, header_data=None)
                 if isinstance(key, StructProperty):
                     # Used in one of the actor properties. intpoint struct
                     # Convert it to a JSON string so it is hashable & python is happy
@@ -1287,7 +1283,6 @@ class MapProperty(BaseObject):
         #             f'Warning! Unknown key with extra data! Value Type:"{self.value_type}". Probable crash'
         #         )
 
-
         writer.write_data(self.unknown2.encode())
         byte_count_start = writer.stream.tell()
 
@@ -1338,6 +1333,7 @@ class MapProperty(BaseObject):
             return self._unparseT2(writer)
         else:
             raise NotImplementedError("Unknown game version")
+
 
 class NamedProperty(BaseObject):
     def __init__(self, name, property_type, property_object):
@@ -1510,7 +1506,11 @@ class ScriptObject(BaseObject):
         # Use the first instance of this as a way to determine which game the file is from
         global GAME_VERSION
         if GAME_VERSION == GameVersion.Unknown and special == 0x2:
-            GAME_VERSION = GameVersion.Reawakened if reader.peek(1) == b"\x00" else GameVersion.Talos2
+            GAME_VERSION = (
+                GameVersion.Reawakened
+                if reader.peek(1) == b"\x00"
+                else GameVersion.Talos2
+            )
 
         # TODO: Split to separate Reawakened & Talos2 parse functions
         # Extra padding sometimes, noticed it's the case when `special` == 0x2
@@ -1579,7 +1579,7 @@ class ScriptObject(BaseObject):
         )
 
     def unparse(self, writer):
-        writer.write_u8(self.special) 
+        writer.write_u8(self.special)
         if self.special == 0:
             # Object ends
             return
@@ -1797,7 +1797,16 @@ class StrProperty(BaseObject):
 
 class StructProperty(BaseObject):
     def __init__(
-        self, magic, struct_name, unknown, path, magic_unknown, uuid, unknown2, data
+        self,
+        magic,
+        struct_name,
+        unknown,
+        path,
+        magic_unknown,
+        uuid,
+        unknown2,
+        data,
+        header=None,
     ):
         self.magic = magic
         self.struct_name = struct_name
@@ -1807,9 +1816,10 @@ class StructProperty(BaseObject):
         self.uuid = uuid
         self.unknown2 = unknown2
         self.data = data
+        self.header = header
 
     @classmethod
-    def parse(cls, reader, include_header=True, header_data=None):
+    def _parseR(cls, reader, include_header=True, header_data=None):
         if include_header:
             magic = reader.read_u32()
             struct_name = reader.read_string()
@@ -1884,6 +1894,56 @@ class StructProperty(BaseObject):
             data,
         )
 
+    @classmethod
+    def _parseT2(cls, reader, include_header=True, header_data=None):
+        print(f"Struct @ {reader.stream.tell():#2x}")
+        header = CommonHeader.parse(reader, optional_guid=False) if include_header else None
+        struct_name = reader.read_string()
+        unknown = reader.read_data(0x11).decode(encoding="unicode_escape")  # Unknown
+
+        if struct_name == "Vector":
+            vector = struct.unpack("<3d", reader.read_data(8 * 3))
+            data = list(vector)
+        elif struct_name == "Quat":
+            quat = struct.unpack("<4d", reader.read_data(8 * 4))
+            data = list(quat)
+        elif struct_name == "IntPoint":
+            intpoint = struct.unpack("<2i", reader.read_data(4 * 2))
+            data = list(intpoint)
+        elif struct_name == "Rotator":
+            rotator = struct.unpack("<3d", reader.read_data(8 * 3))
+            data = list(rotator)
+        elif struct_name == "LinearColor":
+            colour = struct.unpack("<4f", reader.read_data(4 * 4))
+            data = list(colour)
+        else:  # Custom struct, not part of core Unreal Engine
+            # if path == "/Script/CoreUObject" and struct_name != "Transform":
+            #     # Transform is special as it is comprised of 1-3 structs
+            #     print(
+            #         f"Warning! Struct {struct_name} is likely part of core Unreal Engine and has a known format"
+            #     )
+            named_properties = []
+            while True:
+                prop = NamedProperty.parse(reader)
+                if prop == None:
+                    # Hack for None type having no extra bytes
+                    reader.stream.seek(-4, os.SEEK_CUR)
+                    break
+                named_properties.append(prop)
+            data = named_properties
+        return cls(
+            None, struct_name, unknown, None, None, None, None, data, header=header
+        )
+
+    @classmethod
+    def parse(cls, reader, include_header=True, header_data=None):
+        if GAME_VERSION == GameVersion.Reawakened:
+            return cls._parseR(reader, include_header, header_data)
+        elif GAME_VERSION == GameVersion.Talos2:
+            return cls._parseT2(reader, include_header, header_data)
+        else:
+            raise NotImplementedError("Unknown game version")
+
     def parse_separate_header(reader, magic):
         struct_name = reader.read_string()
         non_zero_unknown = reader.read_data(4).decode(
@@ -1910,6 +1970,8 @@ class StructProperty(BaseObject):
 
     def to_dict(self):
         ret = {}
+        if self.header:
+            ret.update({"header": self.header.to_dict()})
         ret.update({"magic": self.magic})
         ret.update({"struct_name": self.struct_name})
         ret.update({"unknown": self.unknown})
@@ -1931,6 +1993,9 @@ class StructProperty(BaseObject):
 
     @classmethod
     def from_dict(cls, dictionary, include_header=True):
+        header = CommonHeader.create_empty() if include_header else None
+        if "header" in dictionary:
+            header = CommonHeader.from_dict(dictionary["header"])
         magic = dictionary["magic"]
         struct_name = dictionary["struct_name"]
         unknown = dictionary["unknown"]
@@ -1956,10 +2021,18 @@ class StructProperty(BaseObject):
                 named_properties.append(NamedProperty.from_dict(name, data))
             data = named_properties
         return cls(
-            magic, struct_name, unknown, path, magic_unknown, uuid, unknown2, data
+            magic,
+            struct_name,
+            unknown,
+            path,
+            magic_unknown,
+            uuid,
+            unknown2,
+            data,
+            header=header,
         )
 
-    def unparse(self, writer, include_header=True, header_data=None):
+    def _unparseR(self, writer, include_header=True, header_data=None):
         if include_header:
             writer.write_u32(self.magic)
             writer.write_string(self.struct_name)
@@ -2009,6 +2082,54 @@ class StructProperty(BaseObject):
             byte_count = current_pos - byte_count_start
             writer.write_u32(byte_count)
             writer.stream.seek(current_pos, os.SEEK_SET)
+
+    def _unparseT2(self, writer, include_header=True, header_data=None):
+        if include_header:
+            # Write the header with a junk byte count to be replaced once the string length is known
+            header_pos = writer.stream.tell()
+            self.header.unparse(writer, 0x41414141, optional_guid=False)
+        writer.write_string(self.struct_name)
+        writer.write_data(self.unknown.encode())
+        byte_count_start = writer.stream.tell()
+
+        if self.struct_name == "Vector":
+            vector = self.data
+            writer.write_data(struct.pack("<3d", vector[0], vector[1], vector[2]))
+        elif self.struct_name == "Quat":
+            quat = self.data
+            writer.write_data(struct.pack("<4d", quat[0], quat[1], quat[2], quat[3]))
+        elif self.struct_name == "IntPoint":
+            intpoint = self.data
+            writer.write_data(struct.pack("<2i", intpoint[0], intpoint[1]))
+        elif self.struct_name == "Rotator":
+            rotator = self.data
+            writer.write_data(struct.pack("<3d", rotator[0], rotator[1], rotator[2]))
+        elif self.struct_name == "LinearColor":
+            colour = self.data
+            writer.write_data(
+                struct.pack("<4f", colour[0], colour[1], colour[2], colour[3])
+            )
+        else:
+            for prop in self.data:
+                prop.unparse(writer)
+            # Write the `None` property
+            writer.write_string("None")
+
+        if include_header:
+            # Calculate bytes dynamically
+            current_pos = writer.stream.tell()
+            writer.stream.seek(header_pos, os.SEEK_SET)
+            byte_count = current_pos - byte_count_start
+            self.header.unparse(writer, byte_count, optional_guid=False)
+            writer.stream.seek(current_pos, os.SEEK_SET)
+
+    def unparse(self, writer, include_header=True, header_data=None):
+        if GAME_VERSION == GameVersion.Reawakened:
+            return self._unparseR(writer, include_header, header_data)
+        elif GAME_VERSION == GameVersion.Talos2:
+            return self._unparseT2(writer, include_header, header_data)
+        else:
+            raise NotImplementedError("Unknown game version")
 
     def unparse_separate_header(writer, magic, header_data):
         # Don't write magic as it's consumed by `ArrayProperty` when parsing
@@ -2151,7 +2272,7 @@ class Level:
         # Replace the ActorProperty ArrayOfBytes object with the parsed script objects
         # Actor properties use a separate string cache (likely because Talos parses them after the main script)
         # Do it here so we can save the actor property cached strings separately
-        cls._actor_properties_fix(level_script)
+        # cls._actor_properties_fix(level_script)
         game_version = GAME_VERSION
         actor_properties_cached_strings = CACHED_STRINGS
         soft_object_cached_strings = SOFT_OBJECT_CACHED_STRINGS
