@@ -22,9 +22,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import IntEnum
 
-# TODO: Move globals to a local "Decode context" parsed as an argument to the parse/unparse functions
-# Allows for loading multiple files in the same script
-
 
 class GameVersion(IntEnum):
     Unknown = -1
@@ -192,7 +189,6 @@ class CommonHeader(BaseObject):
 
     @classmethod
     def _parseT2(cls, reader, optional_guid=True):
-        # raise NotImplementedError("Common header parsing for Talos 2 files not implemented")
         reader.read_u32()  # property_length - Ignore as we always recalculate
         strings = []
         while True:
@@ -307,8 +303,8 @@ class ArrayProperty(BaseObject):
                     reader, magic=include_type_header
                 )
             else:
-                print(
-                    f'Warning! Unknown array type with extra data! Type:"{element_type}". Probable crash'
+                raise NotImplementedError(
+                    f'Unknown array type with extra data! Type:"{element_type}"'
                 )
 
         reader.read_u32()  # Byte count - Ignore as we always recalculate
@@ -323,8 +319,8 @@ class ArrayProperty(BaseObject):
         elif element_type in property_string_to_class:
             element_class = property_string_to_class[element_type]
             if not element_class in TESTED_ARRAY_CLASSES:
-                print(
-                    f'Warning! Untested array element type "{element_type}". Potential for incorrect parsing / crash'
+                raise NotImplementedError(
+                    f'Untested array element type "{element_type}"'
                 )
             for _ in range(length):
                 elements.append(
@@ -336,9 +332,9 @@ class ArrayProperty(BaseObject):
                     )
                 )
         else:
-            print(f'Unimplemented array property type!: "{element_type}"')
-            data = base64.b64encode(reader.read_data(length))
-            elements.append({"data": data.decode()})
+            raise NotImplementedError(
+                f'Unimplemented array property type!: "{element_type}"'
+            )
 
         return cls(
             non_zero_unknown, element_type, include_type_header, header_data, elements
@@ -346,7 +342,6 @@ class ArrayProperty(BaseObject):
 
     @classmethod
     def _parseT2(cls, reader, decode_context):
-        # raise NotImplementedError("Array parsing for Talos 2 files not implemented")
         reader.read_u32()  # Byte count - Ignore as we always recalculate
         non_zero_unknown = reader.read_data(4).decode(encoding="unicode_escape")
         element_type = reader.read_string()
@@ -362,8 +357,8 @@ class ArrayProperty(BaseObject):
         #             reader, magic=include_type_header
         #         )
         #     else:
-        #         print(
-        #             f'Warning! Unknown array type with extra data! Type:"{element_type}". Probable crash'
+        #         raise NotImplementedError(
+        #             f'Unknown array type with extra data! Type:"{element_type}"'
         #         )
 
         reader.read_data(1)  # Unknown
@@ -377,8 +372,8 @@ class ArrayProperty(BaseObject):
         elif element_type in property_string_to_class:
             element_class = property_string_to_class[element_type]
             if not element_class in TESTED_ARRAY_CLASSES:
-                print(
-                    f'Warning! Untested array element type "{element_type}". Potential for incorrect parsing / crash'
+                raise NotImplementedError(
+                    f'Untested array element type "{element_type}"'
                 )
             for _ in range(length):
                 elements.append(
@@ -387,9 +382,9 @@ class ArrayProperty(BaseObject):
                     )
                 )
         else:
-            print(f'Unimplemented array property type!: "{element_type}"')
-            data = base64.b64encode(reader.read_data(length))
-            elements.append({"data": data.decode()})
+            raise NotImplementedError(
+                f'Unimplemented array property type!: "{element_type}"'
+            )
 
         return cls(non_zero_unknown, element_type, None, None, elements)
 
@@ -432,17 +427,17 @@ class ArrayProperty(BaseObject):
             elif element_type in property_string_to_class:
                 element_class = property_string_to_class[element_type]
                 if not element_class in TESTED_ARRAY_CLASSES:
-                    print(
-                        f'Warning! Untested array element type "{element_type}". Potential for incorrect parsing / crash'
+                    raise NotImplementedError(
+                        f'Untested array element type "{element_type}"'
                     )
                 for element in dictionary["elements"]:
                     elements.append(
                         element_class.from_dict(element, include_header=False)
                     )
             else:
-                print(f'Unimplemented array property type!: "{element_type}"')
-                data = base64.b64decode(dictionary["elements"][0].encode())
-                elements.append(data)
+                raise NotImplementedError(
+                    f'Unimplemented array property type!: "{element_type}"'
+                )
         return cls(unknown, element_type, include_type_header, header_data, elements)
 
     def _unparseR(self, writer, decode_context):
@@ -467,8 +462,8 @@ class ArrayProperty(BaseObject):
                     writer, magic=self.include_type_header, header_data=self.header_data
                 )
             else:
-                print(
-                    f'Warning! Unknown array type with extra data! Type:"{self.element_type}". Probable crash'
+                raise NotImplementedError(
+                    f'Unknown array type with extra data! Type:"{self.element_type}"'
                 )
 
         # Calculate bytes dynamically
@@ -485,8 +480,8 @@ class ArrayProperty(BaseObject):
             for element in self.elements:
                 element_class = property_string_to_class[self.element_type]
                 if not element_class in TESTED_ARRAY_CLASSES:
-                    print(
-                        f'Warning! Untested array element type "{self.element_type}". Potential for incorrect unparsing / crash'
+                    raise NotImplementedError(
+                        f'Untested array element type "{self.element_type}"'
                     )
                 element.unparse(
                     writer,
@@ -505,7 +500,6 @@ class ArrayProperty(BaseObject):
         writer.stream.seek(current_pos, os.SEEK_SET)
 
     def _unparseT2(self, writer, decode_context):
-        # raise NotImplementedError("Array unparsing for Talos 2 files not implemented")
         if self.element_type == "ByteProperty":  # Hacky ByteProperty fix
             length = len(self.elements[0].data)
         else:
@@ -531,8 +525,8 @@ class ArrayProperty(BaseObject):
         #             writer, magic=self.include_type_header, header_data=self.header_data
         #         )
         #     else:
-        #         print(
-        #             f'Warning! Unknown array type with extra data! Type:"{self.element_type}". Probable crash'
+        #         raise NotImplementedError(
+        #             f'Unknown array type with extra data! Type:"{self.element_type}"'
         #         )
 
         writer.write_data(b"\x00" * 1)
@@ -545,8 +539,8 @@ class ArrayProperty(BaseObject):
             for element in self.elements:
                 element_class = property_string_to_class[self.element_type]
                 if not element_class in TESTED_ARRAY_CLASSES:
-                    print(
-                        f'Warning! Untested array element type "{self.element_type}". Potential for incorrect unparsing / crash'
+                    raise NotImplementedError(
+                        f'Untested array element type "{self.element_type}"'
                     )
                 element.unparse(
                     writer,
@@ -764,10 +758,6 @@ class EnumProperty(BaseObject):
                 reader, decode_context, include_header=include_header
             )
         else:
-            print(
-                f'Unimplemented enum type!: @{reader.stream.tell():#2x} "{enum_type}"'
-            )
-            # Exception now that we aren't saving the byte count
             raise NotImplementedError(
                 f'Unimplemented enum type!: @{reader.stream.tell():#2x} "{enum_type}"'
             )
@@ -805,7 +795,6 @@ class EnumProperty(BaseObject):
         )  # Unknown
         string2 = reader.read_string()
         reader.read_data(4)  # Unknown
-        # Enum type
         enum_type = reader.read_string()
         reader.read_data(4)  # Unknown
         return {
@@ -1005,8 +994,8 @@ class MapProperty(BaseObject):
                     reader, magic=include_key_header
                 )
             else:
-                print(
-                    f'Warning! Unknown key with extra data! Key Type:"{key_type}". Probable crash'
+                raise NotImplementedError(
+                    f'Unknown key type with extra data! Key Type:"{key_type}"'
                 )
 
         value_type = reader.read_string()
@@ -1019,8 +1008,8 @@ class MapProperty(BaseObject):
                     reader, magic=include_value_header
                 )
             else:
-                print(
-                    f'Warning! Unknown value with extra data! Value Type:"{value_type}". Probable crash'
+                raise NotImplementedError(
+                    f'Unknown value type with extra data! Value Type:"{value_type}"'
                 )
         reader.read_u32()  # Byte count - Ignore as we always recalculate
         non_zero_unknown2 = reader.read_data(1).decode(
@@ -1044,8 +1033,8 @@ class MapProperty(BaseObject):
             ):
                 pass
             else:
-                print(
-                    f'Warning! Untested map element types "{key_type}" & "{value_type}". Potential for incorrect parsing / crash'
+                raise NotImplementedError(
+                    f'Untested map element types "{key_type}" & "{value_type}"'
                 )
             for _ in range(count):
                 key = key_class.parse(
@@ -1067,10 +1056,6 @@ class MapProperty(BaseObject):
                 )
                 map_data.update({key: value})
         else:
-            print(
-                f'Unimplemented map type(s)!: @{reader.stream.tell():#2x} "{key_type}" || "{value_type}"'
-            )
-            # Exception now that we aren't saving the byte count
             raise NotImplementedError(
                 f'Unimplemented map type(s)!: @{reader.stream.tell():#2x} "{key_type}" || "{value_type}"'
             )
@@ -1089,7 +1074,6 @@ class MapProperty(BaseObject):
 
     @classmethod
     def _parseT2(cls, reader, decode_context):
-        # raise NotImplementedError("Map parsing for Talos 2 files not implemented")
         reader.read_u32()  # Byte count - Ignore as we always recalculate
         non_zero_unknown = reader.read_data(4).decode(
             encoding="unicode_escape"
@@ -1104,8 +1088,8 @@ class MapProperty(BaseObject):
         #             reader, magic=include_key_header
         #         )
         #     else:
-        #         print(
-        #             f'Warning! Unknown key with extra data! Key Type:"{key_type}". Probable crash'
+        #         raise NotImplementedError(
+        #             f'Unknown key type with extra data! Key Type:"{key_type}"'
         #         )
 
         value_type = reader.read_string()
@@ -1118,8 +1102,8 @@ class MapProperty(BaseObject):
         #             reader, magic=include_value_header
         #         )
         #     else:
-        #         print(
-        #             f'Warning! Unknown value with extra data! Value Type:"{value_type}". Probable crash'
+        #         raise NotImplementedError(
+        #             f'Unknown value type with extra data! Value Type:"{value_type}"'
         #         )
         non_zero_unknown2 = reader.read_data(1).decode(
             encoding="unicode_escape"
@@ -1142,8 +1126,8 @@ class MapProperty(BaseObject):
             ):
                 pass
             else:
-                print(
-                    f'Warning! Untested map element types "{key_type}" & "{value_type}". Potential for incorrect parsing / crash'
+                raise NotImplementedError(
+                    f'Untested map element types "{key_type}" & "{value_type}"'
                 )
             for _ in range(count):
                 key = key_class.parse(
@@ -1159,10 +1143,6 @@ class MapProperty(BaseObject):
                 )
                 map_data.update({key: value})
         else:
-            print(
-                f'Unimplemented map type(s)!: @{reader.stream.tell():#2x} "{key_type}" || "{value_type}"'
-            )
-            # Exception now that we aren't saving the byte count
             raise NotImplementedError(
                 f'Unimplemented map type(s)!: @{reader.stream.tell():#2x} "{key_type}" || "{value_type}"'
             )
@@ -1264,8 +1244,8 @@ class MapProperty(BaseObject):
                     header_data=self.key_header_data,
                 )
             else:
-                print(
-                    f'Warning! Unknown key with extra data! Key Type:"{self.key_type}". Probable crash'
+                raise NotImplementedError(
+                    f'Unknown key type with extra data! Key Type:"{self.key_type}"'
                 )
 
         writer.write_string(self.value_type)
@@ -1278,8 +1258,8 @@ class MapProperty(BaseObject):
                     header_data=self.value_header_data,
                 )
             else:
-                print(
-                    f'Warning! Unknown key with extra data! Value Type:"{self.value_type}". Probable crash'
+                raise NotImplementedError(
+                    f'Unknown value type with extra data! Value Type:"{self.value_type}"'
                 )
 
         # Calculate bytes dynamically
@@ -1306,8 +1286,8 @@ class MapProperty(BaseObject):
                 ):
                     pass
                 else:
-                    print(
-                        f'Warning! Untested map element types "{self.key_type}" & "{self.value_type}". Potential for incorrect parsing / crash'
+                    raise NotImplementedError(
+                        f'Untested map element types "{self.key_type}" & "{self.value_type}"'
                     )
 
                 if self.key_type == "StructProperty":
@@ -1335,7 +1315,6 @@ class MapProperty(BaseObject):
         writer.stream.seek(current_pos, os.SEEK_SET)
 
     def _unparseT2(self, writer, decode_context):
-        # raise NotImplementedError("Map unparsing for Talos 2 files not implemented")
         count = len(self.map_data)
 
         # Calculate bytes dynamically
@@ -1353,8 +1332,8 @@ class MapProperty(BaseObject):
         #             header_data=self.key_header_data,
         #         )
         #     else:
-        #         print(
-        #             f'Warning! Unknown key with extra data! Key Type:"{self.key_type}". Probable crash'
+        #         raise NotImplementedError(
+        #             f'Unknown key with extra data! Key Type:"{self.key_type}"'
         #         )
 
         writer.write_string(self.value_type)
@@ -1367,8 +1346,8 @@ class MapProperty(BaseObject):
         #             header_data=self.value_header_data,
         #         )
         #     else:
-        #         print(
-        #             f'Warning! Unknown key with extra data! Value Type:"{self.value_type}". Probable crash'
+        #         raise NotImplementedError(
+        #             f'Unknown value type with extra data! Value Type:"{self.value_type}"'
         #         )
 
         writer.write_data(self.unknown2.encode())
@@ -1392,8 +1371,8 @@ class MapProperty(BaseObject):
                 ):
                     pass
                 else:
-                    print(
-                        f'Warning! Untested map element types "{self.key_type}" & "{self.value_type}". Potential for incorrect parsing / crash'
+                    raise NotImplementedError(
+                        f'Untested map element types "{self.key_type}" & "{self.value_type}"'
                     )
 
                 if self.key_type == "StructProperty":
@@ -1437,7 +1416,6 @@ class NamedProperty(BaseObject):
 
     @classmethod
     def parse(cls, reader, decode_context):
-        # print(f"Named Property @ {reader.stream.tell():#2x}")
         name = reader.read_string()
         if name == "None":
             # 4 bytes after "None" is a 0 length string
@@ -1451,10 +1429,6 @@ class NamedProperty(BaseObject):
                 reader, decode_context
             )
         else:
-            print(
-                f'Unimplemented named property type!: @{reader.stream.tell():#2x} "{property_type}"'
-            )
-            # Exception now that we aren't saving the byte count
             raise NotImplementedError(
                 f'Unimplemented named property type!: @{reader.stream.tell():#2x} "{property_type}"'
             )
@@ -1476,8 +1450,6 @@ class NamedProperty(BaseObject):
         elif name == "None":
             pass
         else:
-            print(f'Unimplemented named property type!: "{property_type}"')
-            # Exception now that we aren't saving the byte count
             raise NotImplementedError(
                 f'Unimplemented named property type!: "{property_type}"'
             )
@@ -1489,7 +1461,6 @@ class NamedProperty(BaseObject):
         if self.property_type in property_string_to_class:
             self.property_object.unparse(writer, decode_context)
         else:
-            print(f'Unimplemented named property type!: "{self.property_type}"')
             raise NotImplementedError(
                 f'Unimplemented named property type!: "{self.property_type}"'
             )
@@ -1619,15 +1590,12 @@ class ScriptObject(BaseObject):
         elif user_content_type == ObjectUserContentTypes.CachedDatabasePath:
             database_cache_index = reader.read_s32()
             database_index = reader.read_s32()
-            # print(f"Cached material database: {SCRIPT_PATH_CACHE}")
-            # print(f"Cached material database: {DATABASE_PATH_CACHE}")
             user_content_args.update({"database_cache_index": database_cache_index})
             user_content_args.update({"database_index": database_index})
         elif user_content_type == ObjectUserContentTypes.CachedAssetPath:
             asset_index = reader.read_s32()
             user_content_args.update({"asset_index": asset_index})
         else:
-            print(f"Unimplemented user content type: {user_content_type:#2x}")
             raise NotImplementedError(
                 f"Unimplemented user content type: {user_content_type:#2x}"
             )
@@ -1656,7 +1624,9 @@ class ScriptObject(BaseObject):
                     break
                 named_properties.append(prop)
         elif special not in [0x0B, 0x09, 0x08, 0x07, 0x06, 0x04, 0x03]:
-            print(f"Unknown if special value has named properties: {special:#2x}")
+            raise NotImplementedError(
+                f"Unknown if special value has named properties: {special:#2x}"
+            )
 
         return cls(
             special,
@@ -1757,10 +1727,6 @@ class ScriptObject(BaseObject):
             writer.write_u32(self.asset_index)
 
         # Extra null byte padding when `special` == 0x2 only exists in Reawakened
-        # Otherwise it is the least significant byte from the length of a peroperty name for the
-        # CustomEpisode/CustomLevel script, which can never be a multiple of 256 (false positive)
-        # Use the first instance of this as a way to determine which game the file is from
-
         # Extra padding sometimes, noticed it's only the case when `special` == 0x2
         if (
             decode_context.game_version == GameVersion.Reawakened
@@ -1830,9 +1796,6 @@ class SoftObjectProperty(BaseObject):
             user_content_args.update({"database_cache_index": database_cache_index})
             user_content_args.update({"database_index": database_index})
         else:
-            print(
-                f"Unimplemented soft object user_content_type: {user_content_type:#2x}"
-            )
             raise NotImplementedError(
                 f"Unimplemented soft object user_content_type: {user_content_type:#2x}"
             )
