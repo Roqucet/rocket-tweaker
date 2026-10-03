@@ -344,21 +344,6 @@ class ArrayProperty(BaseObject):
         reader.read_u32()  # Byte count - Ignore as we always recalculate
         non_zero_unknown = reader.read_data(4).decode(encoding="unicode_escape")
         element_type = reader.read_string()
-        # include_type_header = reader.read_u32()
-        # header_data = None
-        # if include_type_header != 0:
-        #     if element_type == "EnumProperty":
-        #         # We can call parse_separate_header since we know the type
-        #         header_data = EnumProperty.parse_separate_header(reader)
-        #     elif element_type == "StructProperty":
-        #         # We can call parse_separate_header since we know the type
-        #         header_data = StructProperty.parse_separate_header(
-        #             reader, magic=include_type_header
-        #         )
-        #     else:
-        #         raise NotImplementedError(
-        #             f'Unknown array type with extra data! Type:"{element_type}"'
-        #         )
 
         reader.read_data(1)  # Unknown
         length = reader.read_u32()  # Don't save length as we always recalculate
@@ -510,23 +495,6 @@ class ArrayProperty(BaseObject):
 
         writer.write_data(self.unknown.encode())
         writer.write_string(self.element_type)
-
-        # writer.write_u32(self.include_type_header)
-        # # Extra header info
-        # if self.include_type_header != 0:
-        #     assert self.header_data  # Make sure header data exists
-        #     if self.element_type == "EnumProperty":
-        #         # We can call parse_separate_header since we know the type
-        #         EnumProperty.unparse_separate_header(writer, self.header_data)
-        #     elif self.element_type == "StructProperty":
-        #         # We can call parse_separate_header since we know the type
-        #         StructProperty.unparse_separate_header(
-        #             writer, magic=self.include_type_header, header_data=self.header_data
-        #         )
-        #     else:
-        #         raise NotImplementedError(
-        #             f'Unknown array type with extra data! Type:"{self.element_type}"'
-        #         )
 
         writer.write_data(b"\x00" * 1)
         byte_count_start = writer.stream.tell()
@@ -1133,32 +1101,7 @@ class MapProperty(BaseObject):
             encoding="unicode_escape"
         )  # Unknown
         key_type = reader.read_string()
-        # include_key_header = reader.read_u32()
-        # key_header_data = None
-        # if include_key_header != 0:
-        #     if key_type == "StructProperty":
-        #         # We can call parse_separate_header since we know the type
-        #         key_header_data = StructProperty.parse_separate_header(
-        #             reader, magic=include_key_header
-        #         )
-        #     else:
-        #         raise NotImplementedError(
-        #             f'Unknown key type with extra data! Key Type:"{key_type}"'
-        #         )
-
         value_type = reader.read_string()
-        # include_value_header = reader.read_u32()
-        # value_header_data = None
-        # if include_value_header != 0:
-        #     if value_type == "StructProperty":
-        #         # We can call parse_separate_header since we know the type
-        #         value_header_data = StructProperty.parse_separate_header(
-        #             reader, magic=include_value_header
-        #         )
-        #     else:
-        #         raise NotImplementedError(
-        #             f'Unknown value type with extra data! Value Type:"{value_type}"'
-        #         )
         non_zero_unknown2 = reader.read_data(1).decode(
             encoding="unicode_escape"
         )  # Unknown
@@ -1190,7 +1133,10 @@ class MapProperty(BaseObject):
                 )
             for _ in range(count):
                 key = key_class.parse(
-                    reader, decode_context, include_header=False, header_data=key_header_data
+                    reader,
+                    decode_context,
+                    include_header=False,
+                    header_data=key_header_data,
                 )
                 if isinstance(key, StructProperty):
                     # Used in one of the actor properties. intpoint struct
@@ -1198,7 +1144,10 @@ class MapProperty(BaseObject):
                     # Souldn't need to be edited anyway
                     key = json.dumps(key.to_dict())
                 value = value_class.parse(
-                    reader, decode_context, include_header=False, header_data=value_header_data
+                    reader,
+                    decode_context,
+                    include_header=False,
+                    header_data=value_header_data,
                 )
                 map_data.update({key: value})
         else:
@@ -1382,41 +1331,13 @@ class MapProperty(BaseObject):
 
         writer.write_data(self.unknown.encode())
         writer.write_string(self.key_type)
-        # writer.write_u32(self.include_key_header)
-        # if self.key_header_data:
-        #     if self.key_type == "StructProperty":
-        #         StructProperty.unparse_separate_header(
-        #             writer,
-        #             magic=self.include_key_header,
-        #             header_data=self.key_header_data,
-        #         )
-        #     else:
-        #         raise NotImplementedError(
-        #             f'Unknown key with extra data! Key Type:"{self.key_type}"'
-        #         )
-
         writer.write_string(self.value_type)
-        # writer.write_u32(self.include_value_header)
-        # if self.value_header_data:
-        #     if self.value_type == "StructProperty":
-        #         StructProperty.unparse_separate_header(
-        #             writer,
-        #             magic=self.include_value_header,
-        #             header_data=self.value_header_data,
-        #         )
-        #     else:
-        #         raise NotImplementedError(
-        #             f'Unknown value type with extra data! Value Type:"{self.value_type}"'
-        #         )
-
         writer.write_data(self.unknown2.encode())
         byte_count_start = writer.stream.tell()
-
         writer.write_data(b"\x00" * 4)  # Unknown
 
         # Write map count based on element length
         writer.write_u32(count)
-
         for key, value in self.map_data.items():
             if (
                 self.key_type in property_string_to_class
@@ -1475,7 +1396,6 @@ class NamedProperty(BaseObject):
 
     @classmethod
     def parse(cls, reader, decode_context):
-        print(f"Named Property @ {reader.stream.tell():#2x}")
         name = reader.read_string()
         if name == "None":
             # 4 bytes after "None" is a 0 length string
@@ -1623,7 +1543,6 @@ class ScriptObject(BaseObject):
 
     @classmethod
     def parse(cls, reader, decode_context):
-        print(f"Script @ {reader.stream.tell():#2x}")
         special = reader.read_u8()
         if special == 0:
             # Object ends
@@ -2145,11 +2064,6 @@ class StructProperty(BaseObject):
             colour = struct.unpack("<4f", reader.read_data(4 * 4))
             data = list(colour)
         else:  # Custom struct, not part of core Unreal Engine
-            # if path == "/Script/CoreUObject" and struct_name != "Transform":
-            #     # Transform is special as it is comprised of 1-3 structs
-            #     print(
-            #         f"Warning! Struct {struct_name} is likely part of core Unreal Engine and has a known format"
-            #     )
             named_properties = []
             while True:
                 prop = NamedProperty.parse(reader, decode_context)
@@ -2165,7 +2079,6 @@ class StructProperty(BaseObject):
 
     @classmethod
     def parse(cls, reader, decode_context, include_header=True, header_data=None):
-        print(f"Struct @ {reader.stream.tell():#2x}")
         if decode_context.game_version == GameVersion.Reawakened:
             return cls._parseR(reader, decode_context, include_header, header_data)
         elif decode_context.game_version == GameVersion.Talos2:
@@ -2473,7 +2386,6 @@ class Level:
                     reader = BinaryReader(buf_reader)
                     # Unknown what the first 8 bytes are. Always 0
                     reader.read_data(8)
-                    print("\n\n\n\n\n\n")
                     # Read scripts until there are no more bytes
                     while reader.stream.peek(1):
                         script = ObjectProperty.parse(
@@ -2509,16 +2421,6 @@ class Level:
     @classmethod
     def from_dict(cls, dictionary):
         level = dictionary
-        # # Dump b64 encoded actor properties to file
-        # scene = level["level_script"]["named_properties"]["Scene"]
-        # if "named_properties" in scene:
-        #     actor_properties = scene["named_properties"]["ActorProperties"]
-        #     actor_prop_bytes = actor_properties["elements"][0]["data"]
-        #     actor_prop_bytes = base64.b64decode(actor_prop_bytes)
-        #     with open("./actor_prop.dump", "wb") as f:
-        #         f.write(actor_prop_bytes)
-        # exit(1)
-
         # Get the decode contexts
         main_decode_context = DecodeContext()
         main_decode_context.game_version = level["game_version"]
@@ -2733,8 +2635,6 @@ def main():
     # .level & .episode files are largely handled by Unreal Engine, with each script/object having a `Serialize` function.
     # This results in a file format similar to unreal games saves (GVAS). Its possible those tool can read/edit .episode & .level files
     # However, "Puzzle Editor author did do a lot of customization as to how the custom levels are serialized" (https://discord.com/channels/464411560563965953/1315739667202834484/1359821476093624383)
-
-    # This tool can read .level files!!
 
     args = parser.parse_args()
     input_path = args.input_file
