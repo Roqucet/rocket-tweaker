@@ -359,10 +359,17 @@ class ArrayProperty(BaseObject):
                 raise NotImplementedError(
                     f'Untested array element type "{element_type}"'
                 )
+            header_data = None
+            if element_type == "StructProperty":
+                # dummy header for array of structs which expect header data
+                header_data = {"struct_name": ""}
             for _ in range(length):
                 elements.append(
                     element_class.parse(
-                        reader, decode_context, include_header=False, header_data=None
+                        reader,
+                        decode_context,
+                        include_header=False,
+                        header_data=header_data,
                     )
                 )
         else:
@@ -1936,7 +1943,10 @@ class StrProperty(BaseObject):
             self.header.unparse(writer, decode_context, byte_count)
             writer.stream.seek(current_pos, os.SEEK_SET)
 
-
+# TODO: Fix Talos 2 arrays of structs, to properly to remove the S_EditorTerminalDialog
+# My (limited) understanding of arrays of structs:
+# - First few bytes of the array data are a common struct header, which is shared between the array elements
+# - The "byte_count" in this header is the total number of bytes of all elements combined
 class StructProperty(BaseObject):
     def __init__(
         self,
@@ -2039,6 +2049,9 @@ class StructProperty(BaseObject):
     @classmethod
     def _parseT2(cls, reader, decode_context, include_header=True, header_data=None):
         if include_header:
+            # Hacky fix for the S_EditorTerminalDialog struct
+            byte_count = reader.read_u32()
+            reader.stream.seek(-4, os.SEEK_CUR)
             header = CommonHeader.parse(reader, decode_context, optional_guid=False)
             struct_name = reader.read_string()
             unknown = base64.b64encode(reader.read_data(0x11)).decode()
@@ -2063,6 +2076,11 @@ class StructProperty(BaseObject):
         elif struct_name == "LinearColor":
             colour = struct.unpack("<4f", reader.read_data(4 * 4))
             data = list(colour)
+        elif struct_name == "S_EditorTerminalDialog":
+            # This single struct has caused me a great deal of pain, skip over it.
+            # Hopefully no one wants to edit NPC/terminal dialog outside of the game
+            assert byte_count
+            data = base64.b64encode(reader.read_data(byte_count)).decode()
         else:  # Custom struct, not part of core Unreal Engine
             named_properties = []
             while True:
@@ -2071,6 +2089,10 @@ class StructProperty(BaseObject):
                     # Hack for None type having no extra bytes
                     reader.stream.seek(-4, os.SEEK_CUR)
                     break
+                if not include_header and prop.property_type == "StructProperty":
+                    # Don't know why, but an array of structs containing structs have 1 less "None" property
+                    # Hacky fix, go back 9 bytes
+                    reader.stream.seek(-9, os.SEEK_CUR)
                 named_properties.append(prop)
             data = named_properties
         return cls(
@@ -2114,18 +2136,28 @@ class StructProperty(BaseObject):
         ret = {}
         if self.header:
             ret.update({"header": self.header.to_dict()})
-        ret.update({"magic": self.magic})
-        ret.update({"struct_name": self.struct_name})
+        if self.magic:
+            ret.update({"magic": self.magic})
+        if self.struct_name:
+            ret.update({"struct_name": self.struct_name})
         if self.unknown:
             ret.update({"unknown": self.unknown})
-        ret.update({"path": self.path})
+        if self.path:
+            ret.update({"path": self.path})
         if self.magic_unknown:
             ret.update({"magic_unknown": self.magic_unknown})
         if self.uuid:
             ret.update({"uuid": self.uuid})
         if self.unknown2:
             ret.update({"unknown2": self.unknown2})
-        if self.struct_name in ["Vector", "Quat", "IntPoint", "Rotator", "LinearColor"]:
+        if self.struct_name in [
+            "Vector",
+            "Quat",
+            "IntPoint",
+            "Rotator",
+            "LinearColor",
+            "S_EditorTerminalDialog",
+        ]:
             ret.update({self.struct_name: self.data})
         else:  # Custom struct, not part of core Unreal Engine
             named_properties = {}
@@ -2139,15 +2171,13 @@ class StructProperty(BaseObject):
         header = CommonHeader.create_empty() if include_header else None
         if "header" in dictionary:
             header = CommonHeader.from_dict(dictionary["header"])
-        magic = dictionary["magic"]
-        struct_name = dictionary["struct_name"]
+        magic = dictionary.get("magic", None)
+        struct_name = dictionary.get("struct_name", "")
         unknown = dictionary.get("unknown", None)
-        path = dictionary["path"]
+        path = dictionary.get("path", None)
         magic_unknown = dictionary.get("magic_unknown", "")
         uuid = dictionary.get("uuid", "")
-        unknown2 = dictionary.get(
-            "unknown2", None
-        )  # If it doesn't exist, it shouldn't get written
+        unknown2 = dictionary.get("unknown2", None)
         if struct_name == "Vector":
             data = dictionary["Vector"]
         elif struct_name == "Quat":
@@ -2158,6 +2188,8 @@ class StructProperty(BaseObject):
             data = dictionary["Rotator"]
         elif struct_name == "LinearColor":
             data = dictionary["LinearColor"]
+        elif struct_name == "S_EditorTerminalDialog":
+            data = dictionary["S_EditorTerminalDialog"]
         else:  # Custom struct, not part of core Unreal Engine
             named_properties = []
             for name, data in dictionary["data"].items():
@@ -2252,9 +2284,18 @@ class StructProperty(BaseObject):
             writer.write_data(
                 struct.pack("<4f", colour[0], colour[1], colour[2], colour[3])
             )
+        elif self.struct_name == "S_EditorTerminalDialog":
+            # This single struct has caused me a great deal of pain, skip over it.
+            # Hopefully no one wants to edit NPC/terminal dialog outside of the game
+            writer.write_data(base64.b64decode(self.data))
         else:
             for prop in self.data:
                 prop.unparse(writer, decode_context)
+
+                if not include_header and prop.property_type == "StructProperty":
+                    # Don't know why, but an array of structs containing structs have 1 less "None" property
+                    # Hacky fix, go back 9 bytes
+                    writer.stream.seek(-9, os.SEEK_CUR)
             # Write the `None` property
             writer.write_string("None")
 
