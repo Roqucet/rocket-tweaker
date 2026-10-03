@@ -23,9 +23,10 @@ from enum import IntEnum
 
 # TODO: Move globals to a local "Decode context" parsed as an argument to the parse/unparse functions
 # Allows for loading multiple files in the same script
-CACHED_STRINGS = []
-SOFT_OBJECT_CACHED_STRINGS = []
-DATABASE_CACHED_STRING = []
+SCRIPT_PATH_CACHE = []
+DATABASE_PATH_CACHE = []
+ASSET_PATH_CACHE = []
+SOFT_OBJECT_ASSET_PATH_CACHE = []
 
 class GameVersion(IntEnum):
     Unknown = -1
@@ -1498,11 +1499,12 @@ class ObjectProperty(BaseObject):
 class ObjectUserContentTypes(IntEnum):
     Unknown = -1
     TargetActor = 0x03
-    CachedPath = 0x04
-    CachedMaterialPath = 0x06
+    CachedScriptPath = 0x04
+    CachedDatabasePath = 0x06
     AssetPath = 0x07
-    UncachedPath = 0x08
-    MaterialReference = 0x09
+    ScriptPath = 0x08
+    DatabasePath = 0x09
+    CachedAssetPath = 0x0b
 
 
 class ScriptObject(BaseObject):
@@ -1515,20 +1517,22 @@ class ScriptObject(BaseObject):
     ):
         self.special = special
         self.user_content_type = user_content_type
-        if user_content_type == ObjectUserContentTypes.UncachedPath:
-            self.object_path = user_content_args["object_path"]
+        if user_content_type == ObjectUserContentTypes.ScriptPath:
+            self.script_path = user_content_args["script_path"]
         elif user_content_type == ObjectUserContentTypes.AssetPath:
             self.asset_path = user_content_args["asset_path"]
-        elif user_content_type == ObjectUserContentTypes.CachedPath:
+        elif user_content_type == ObjectUserContentTypes.CachedScriptPath:
             self.cache_index = user_content_args["cache_index"]
         elif user_content_type == ObjectUserContentTypes.TargetActor:
             self.target_actor_index = user_content_args["target_actor_index"]
-        elif user_content_type == ObjectUserContentTypes.MaterialReference:
+        elif user_content_type == ObjectUserContentTypes.DatabasePath:
             self.database_path = user_content_args["database_path"]
             self.database_index = user_content_args["database_index"]
-        elif user_content_type == ObjectUserContentTypes.CachedMaterialPath:
+        elif user_content_type == ObjectUserContentTypes.CachedDatabasePath:
             self.database_cache_index = user_content_args["database_cache_index"]
             self.database_index = user_content_args["database_index"]
+        elif user_content_type == ObjectUserContentTypes.CachedAssetPath:
+            self.asset_index = user_content_args["asset_index"]
 
         self.named_properties = named_properties
 
@@ -1550,33 +1554,36 @@ class ScriptObject(BaseObject):
             user_content_type = ObjectUserContentTypes(special)
 
         user_content_args = {}
-        if user_content_type == ObjectUserContentTypes.UncachedPath:
-            object_path = reader.read_string()
-            CACHED_STRINGS.append(object_path)
-            user_content_args.update({"object_path": object_path})
+        if user_content_type == ObjectUserContentTypes.ScriptPath:
+            script_path = reader.read_string()
+            SCRIPT_PATH_CACHE.append(script_path)
+            user_content_args.update({"script_path": script_path})
         elif user_content_type == ObjectUserContentTypes.AssetPath:
-            # TODO: Unsure if this gets cached (or even uses the same cache)
             asset_path = reader.read_string()
+            ASSET_PATH_CACHE.append(asset_path)
             user_content_args.update({"asset_path": asset_path})
-        elif user_content_type == ObjectUserContentTypes.CachedPath:
+        elif user_content_type == ObjectUserContentTypes.CachedScriptPath:
             cache_index = reader.read_u32()
             user_content_args.update({"cache_index": cache_index})
         elif user_content_type == ObjectUserContentTypes.TargetActor:
             target_actor_index = reader.read_u32()
             user_content_args.update({"target_actor_index": target_actor_index})
-        elif user_content_type == ObjectUserContentTypes.MaterialReference:
+        elif user_content_type == ObjectUserContentTypes.DatabasePath:
             database_path = reader.read_string()
             database_index = reader.read_s32()
-            DATABASE_CACHED_STRING.append(database_path)
+            DATABASE_PATH_CACHE.append(database_path)
             user_content_args.update({"database_path": database_path})
             user_content_args.update({"database_index": database_index})
-        elif user_content_type == ObjectUserContentTypes.CachedMaterialPath:
+        elif user_content_type == ObjectUserContentTypes.CachedDatabasePath:
             database_cache_index = reader.read_s32()
             database_index = reader.read_s32()
-            # print(f"Cached material database: {CACHED_STRINGS}")
-            # print(f"Cached material database: {DATABASE_CACHED_STRING}")
+            # print(f"Cached material database: {SCRIPT_PATH_CACHE}")
+            # print(f"Cached material database: {DATABASE_PATH_CACHE}")
             user_content_args.update({"database_cache_index": database_cache_index})
             user_content_args.update({"database_index": database_index})
+        elif user_content_type == ObjectUserContentTypes.CachedAssetPath:
+            asset_index = reader.read_s32()
+            user_content_args.update({"asset_index": asset_index})
         else:
             print(f"Unimplemented user content type: {user_content_type:#2x}")
             raise NotImplementedError(
@@ -1608,18 +1615,8 @@ class ScriptObject(BaseObject):
                 if prop == None:
                     break
                 named_properties.append(prop)
-        elif (
-            special == 0x09
-            or special == 0x08
-            or special == 0x07
-            or special == 0x06
-            or special == 0x04
-            or special == 0x03
-        ):
-            # No named properties
-            pass
-        else:
-            print(f"Unknown special value: {special:#2x}")
+        elif special not in [0x0b,0x09,0x08,0x07,0x06,0x04,0x03]:
+            print(f"Unknown if special value has named properties: {special:#2x}")
 
         return cls(
             special,
@@ -1632,8 +1629,8 @@ class ScriptObject(BaseObject):
         ret = {}
         ret.update({"special": self.special})
         ret.update({"user_content_type": self.user_content_type})
-        if hasattr(self, "object_path"):
-            ret.update({"object_path": self.object_path})
+        if hasattr(self, "script_path"):
+            ret.update({"script_path": self.script_path})
         if hasattr(self,"asset_path"):
             ret.update({"asset_path": self.asset_path})
         if hasattr(self,"cache_index"):
@@ -1646,6 +1643,8 @@ class ScriptObject(BaseObject):
             ret.update({"database_cache_index": self.database_cache_index})
         if hasattr(self,"database_index"):
             ret.update({"database_index": self.database_index})
+        if hasattr(self,"asset_index"):
+            ret.update({"asset_index": self.asset_index})
         if self.named_properties:
             named_properties = {}
             for prop in self.named_properties:
@@ -1658,20 +1657,22 @@ class ScriptObject(BaseObject):
         special = dictionary["special"]
         user_content_type = dictionary["user_content_type"]
         user_content_args = {}
-        if user_content_type == ObjectUserContentTypes.UncachedPath:
-            user_content_args.update({"object_path": dictionary["object_path"]})
+        if user_content_type == ObjectUserContentTypes.ScriptPath:
+            user_content_args.update({"script_path": dictionary["script_path"]})
         elif user_content_type == ObjectUserContentTypes.AssetPath:
             user_content_args.update({"asset_path": dictionary["asset_path"]})
-        elif user_content_type == ObjectUserContentTypes.CachedPath:
+        elif user_content_type == ObjectUserContentTypes.CachedScriptPath:
             user_content_args.update({"cache_index": dictionary["cache_index"]})
         elif user_content_type == ObjectUserContentTypes.TargetActor:
             user_content_args.update({"target_actor_index": dictionary["target_actor_index"]})
-        elif user_content_type == ObjectUserContentTypes.MaterialReference:
+        elif user_content_type == ObjectUserContentTypes.DatabasePath:
             user_content_args.update({"database_path": dictionary["database_path"]})
             user_content_args.update({"database_index": dictionary["database_index"]})
-        elif user_content_type == ObjectUserContentTypes.CachedMaterialPath:
+        elif user_content_type == ObjectUserContentTypes.CachedDatabasePath:
             user_content_args.update({"database_cache_index": dictionary["database_cache_index"]})
             user_content_args.update({"database_index": dictionary["database_index"]})
+        elif user_content_type == ObjectUserContentTypes.CachedAssetPath:
+            user_content_args.update({"asset_index": dictionary["asset_index"]})
 
         named_properties = []
         properties = dictionary.get("named_properties", {})
@@ -1694,20 +1695,22 @@ class ScriptObject(BaseObject):
         if self.special == 0x2:
             writer.write_u8(self.user_content_type)
 
-        if self.user_content_type == ObjectUserContentTypes.UncachedPath:
-            writer.write_string(self.object_path)
+        if self.user_content_type == ObjectUserContentTypes.ScriptPath:
+            writer.write_string(self.script_path)
         elif self.user_content_type == ObjectUserContentTypes.AssetPath:
             writer.write_string(self.asset_path)
-        elif self.user_content_type == ObjectUserContentTypes.CachedPath:
+        elif self.user_content_type == ObjectUserContentTypes.CachedScriptPath:
             writer.write_u32(self.cache_index)
         elif self.user_content_type == ObjectUserContentTypes.TargetActor:
             writer.write_u32(self.target_actor_index)
-        elif self.user_content_type == ObjectUserContentTypes.MaterialReference:
+        elif self.user_content_type == ObjectUserContentTypes.DatabasePath:
             writer.write_string(self.database_path)
             writer.write_u32(self.database_index)
-        elif self.user_content_type == ObjectUserContentTypes.CachedMaterialPath:
+        elif self.user_content_type == ObjectUserContentTypes.CachedDatabasePath:
             writer.write_u32(self.database_cache_index)
             writer.write_u32(self.database_index)
+        elif self.user_content_type == ObjectUserContentTypes.CachedAssetPath:
+            writer.write_u32(self.asset_index)
 
         # Extra null byte padding when `special` == 0x2 only exists in Reawakened
         # Otherwise it is the least significant byte from the length of a peroperty name for the
@@ -1726,7 +1729,7 @@ class ScriptObject(BaseObject):
             writer.write_string("None")
             writer.write_data(b"\x00" * 4)
 
-
+# TODO: Same as regular ObjectUserContentTypes
 class SoftObjectUserContentTypes(IntEnum):
     Unknown = -1
     CachedDatabase = 0x06
@@ -1763,7 +1766,7 @@ class SoftObjectProperty(BaseObject):
         if user_content_type == SoftObjectUserContentTypes.Database:
             database_path = reader.read_string()
             database_index = reader.read_s32()
-            SOFT_OBJECT_CACHED_STRINGS.append(database_path)
+            SOFT_OBJECT_ASSET_PATH_CACHE.append(database_path)
             user_content_args.update({"database_path": database_path})
             user_content_args.update({"database_index": database_index})
         elif user_content_type == SoftObjectUserContentTypes.DirectPath:
@@ -2331,24 +2334,32 @@ class Level:
         self,
         game_version,
         level_script,
-        cached_strings,
-        actor_properties_cached_strings,
-        soft_object_cached_strings,
+        main_script_path_cache,
+        actor_properties_script_path_cache,
+        actor_properties_database_path_cache,
+        actor_properties_asset_path_cache,
+        actor_properties_soft_object_asset_path_cache,
     ):
         self.game_version = game_version
         self.level_script = level_script
-        self.cached_strings = cached_strings
-        self.actor_properties_cached_strings = actor_properties_cached_strings
-        self.soft_object_cached_strings = soft_object_cached_strings
+        self.main_script_path_cache = main_script_path_cache
+        self.actor_properties_script_path_cache = actor_properties_script_path_cache
+        self.actor_properties_database_path_cache = actor_properties_database_path_cache
+        self.actor_properties_asset_path_cache = actor_properties_asset_path_cache
+        self.actor_properties_soft_object_asset_path_cache = actor_properties_soft_object_asset_path_cache
 
     def __repr__(self):
         return f"{self.level_script}"
 
     def _actor_properties_fix(level_script):
-        global CACHED_STRINGS
-        global SOFT_OBJECT_CACHED_STRINGS
-        CACHED_STRINGS = []
-        SOFT_OBJECT_CACHED_STRINGS = []
+        global SCRIPT_PATH_CACHE
+        global DATABASE_PATH_CACHE
+        global ASSET_PATH_CACHE
+        global SOFT_OBJECT_ASSET_PATH_CACHE
+        SCRIPT_PATH_CACHE = []
+        DATABASE_PATH_CACHE = []
+        ASSET_PATH_CACHE = []
+        SOFT_OBJECT_ASSET_PATH_CACHE = []
         scene = level_script.get_property("Scene")
         if scene:
             actor_properties = scene.property_object.object_.get_property(
@@ -2365,47 +2376,67 @@ class Level:
                     reader.read_data(8)
                     # Read scripts until there are no more bytes
                     while reader.stream.peek(1):
-                        # print(f"Script @ {reader.stream.tell():#2x}")
+                        print(f"Script @ {reader.stream.tell():#2x}")
                         script = ObjectProperty.parse(reader, include_header=False)
                         scripts.append(script)
                 actor_properties.elements = scripts
 
     @classmethod
     def from_file(cls, level_path):
-        global CACHED_STRINGS
-        CACHED_STRINGS = []
+        global SCRIPT_PATH_CACHE
+        SCRIPT_PATH_CACHE = []
         with open(level_path, "rb") as f:
             reader = BinaryReader(f)
             # Unknown what the first 8 bytes are. Always 0
             reader.read_data(8)
             level_script = ScriptObject.parse(reader)
-        cached_strings = CACHED_STRINGS
+        main_script_path_cache = SCRIPT_PATH_CACHE
 
         # Replace the ActorProperty ArrayOfBytes object with the parsed script objects
         # Actor properties use a separate string cache (likely because Talos parses them after the main script)
         # Do it here so we can save the actor property cached strings separately
         cls._actor_properties_fix(level_script)
         game_version = GAME_VERSION
-        actor_properties_cached_strings = CACHED_STRINGS
-        soft_object_cached_strings = SOFT_OBJECT_CACHED_STRINGS
+        actor_properties_script_path_cache = SCRIPT_PATH_CACHE
+        actor_properties_soft_object_asset_path_cache = SOFT_OBJECT_ASSET_PATH_CACHE
+        actor_properties_database_path_cache = DATABASE_PATH_CACHE
+        actor_properties_asset_path_cache = ASSET_PATH_CACHE
         return cls(
             game_version,
             level_script,
-            cached_strings,
-            actor_properties_cached_strings,
-            soft_object_cached_strings,
+            main_script_path_cache,
+            actor_properties_script_path_cache,
+            actor_properties_database_path_cache,
+            actor_properties_asset_path_cache,
+            actor_properties_soft_object_asset_path_cache,
         )
 
     @classmethod
     def from_dict(cls, dictionary):
         global GAME_VERSION
-        global CACHED_STRINGS
-        global SOFT_OBJECT_CACHED_STRINGS
+        global SCRIPT_PATH_CACHE
+        global DATABASE_PATH_CACHE
+        global ASSET_PATH_CACHE
+        global SOFT_OBJECT_ASSET_PATH_CACHE
         level = dictionary
+        # # Dump b64 encoded actor properties to file
+        # scene = level["level_script"]["named_properties"]["Scene"]
+        # if "named_properties" in scene:
+        #     actor_properties = scene["named_properties"]["ActorProperties"]
+        #     actor_prop_bytes = actor_properties["elements"][0]["data"]
+        #     actor_prop_bytes = base64.b64decode(actor_prop_bytes)
+        #     with open("./actor_prop.dump", "wb") as f:
+        #         f.write(actor_prop_bytes)
+        # exit(1)
+
         # Parse the ActorProperty array to an ArrayOfBytes object to correctly read the JSON
+        # Setup the decode context to be actor properties
+        # Global caches
         GAME_VERSION = level["game_version"]
-        CACHED_STRINGS = level["actor_properties_cached_strings"]
-        SOFT_OBJECT_CACHED_STRINGS = level["soft_object_cached_strings"]
+        SCRIPT_PATH_CACHE = level["actor_properties_script_path_cache"]
+        DATABASE_PATH_CACHE = level["actor_properties_database_path_cache"]
+        ASSET_PATH_CACHE = level["actor_properties_asset_path_cache"]
+        SOFT_OBJECT_ASSET_PATH_CACHE = level["actor_properties_soft_object_asset_path_cache"]
         # Save the parsed actor properties so we don't need to re-parse them
         scene = level["level_script"]["named_properties"]["Scene"]
         if "named_properties" in scene:
@@ -2430,12 +2461,17 @@ class Level:
                 {"data": base64.b64encode(actor_prop_bytes).decode()}
             ]
 
-        CACHED_STRINGS = level["cached_strings"]
+        # Setup the decode context to be for the main script
+        # Global caches
+        SCRIPT_PATH_CACHE = level["main_script_path_cache"]
         level_script = ScriptObject.from_dict(level["level_script"])
-        game_version = GAME_VERSION
-        cached_strings = CACHED_STRINGS
-        actor_properties_cached_strings = CACHED_STRINGS
-        soft_object_cached_strings = SOFT_OBJECT_CACHED_STRINGS
+
+        game_version = level["game_version"]
+        main_script_path_cache = level["main_script_path_cache"]
+        actor_properties_script_path_cache = level["actor_properties_script_path_cache"]
+        actor_properties_database_path_cache = level["actor_properties_database_path_cache"]
+        actor_properties_asset_path_cache = level["actor_properties_asset_path_cache"]
+        actor_properties_soft_object_asset_path_cache = level["actor_properties_soft_object_asset_path_cache"]
 
         # Restore the parsed actor properties so we don't need to re-parse them
         scene = level_script.get_property("Scene")
@@ -2449,17 +2485,21 @@ class Level:
         return cls(
             game_version,
             level_script,
-            cached_strings,
-            actor_properties_cached_strings,
-            soft_object_cached_strings,
+            main_script_path_cache,
+            actor_properties_script_path_cache,
+            actor_properties_database_path_cache,
+            actor_properties_asset_path_cache,
+            actor_properties_soft_object_asset_path_cache,
         )
 
     def to_json(self, json_path):
         level = {
             "game_version": self.game_version,
-            "cached_strings": self.cached_strings,
-            "actor_properties_cached_strings": self.actor_properties_cached_strings,
-            "soft_object_cached_strings": self.soft_object_cached_strings,
+            "main_script_path_cache": self.main_script_path_cache,
+            "actor_properties_script_path_cache": self.actor_properties_script_path_cache,
+            "actor_properties_database_path_cache": self.actor_properties_database_path_cache,
+            "actor_properties_asset_path_cache": self.actor_properties_asset_path_cache,
+            "actor_properties_soft_object_asset_path_cache": self.actor_properties_soft_object_asset_path_cache,
             "level_script": self.level_script.to_dict(),
         }
         with open(json_path, "wb") as f:
@@ -2505,44 +2545,44 @@ class Level:
 
 # Class for episode files
 class Episode:
-    def __init__(self, game_version, episode_script, cached_strings):
+    def __init__(self, game_version, episode_script, SCRIPT_PATH_CACHE):
         self.game_version = game_version
         self.episode_script = episode_script
-        self.cached_strings = cached_strings
+        self.SCRIPT_PATH_CACHE = SCRIPT_PATH_CACHE
 
     def __repr__(self):
         return f"{self.episode_script}"
 
     @classmethod
     def from_file(cls, episode_path):
-        global CACHED_STRINGS
-        CACHED_STRINGS = []
+        global SCRIPT_PATH_CACHE
+        SCRIPT_PATH_CACHE = []
         with open(episode_path, "rb") as f:
             reader = BinaryReader(f)
             # Unknown what the first 8 bytes are. Always 0
             reader.read_data(8)
             episode_script = ScriptObject.parse(reader)
         game_version = GAME_VERSION
-        cached_strings = CACHED_STRINGS
-        return cls(game_version, episode_script, cached_strings)
+        SCRIPT_PATH_CACHE = SCRIPT_PATH_CACHE
+        return cls(game_version, episode_script, SCRIPT_PATH_CACHE)
 
     @classmethod
     def from_dict(cls, dictionary):
         global GAME_VERSION
-        global CACHED_STRINGS
-        CACHED_STRINGS = []
+        global SCRIPT_PATH_CACHE
+        SCRIPT_PATH_CACHE = []
         episode = dictionary
         GAME_VERSION = episode["game_version"]
-        CACHED_STRINGS = episode["cached_strings"]
+        SCRIPT_PATH_CACHE = episode["SCRIPT_PATH_CACHE"]
         episode_script = ScriptObject.from_dict(episode["episode_script"])
         game_version = GAME_VERSION
-        cached_strings = CACHED_STRINGS
-        return cls(game_version, episode_script, cached_strings)
+        SCRIPT_PATH_CACHE = SCRIPT_PATH_CACHE
+        return cls(game_version, episode_script, SCRIPT_PATH_CACHE)
 
     def to_json(self, json_path):
         episode = {
             "game_version": self.game_version,
-            "cached_strings": self.cached_strings,
+            "SCRIPT_PATH_CACHE": self.SCRIPT_PATH_CACHE,
             "episode_script": self.episode_script.to_dict(),
         }
         with open(json_path, "wb") as f:
