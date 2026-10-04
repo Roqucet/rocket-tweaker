@@ -3,7 +3,7 @@
 """
 Author: Rocket (Discord: @roqucet)
 Created: 2026-01-27
-Version: v0.2.1
+Version: v0.2.2
 Description: Gives more freedom for editing TTP:R .level/.episode files.
     Lets you dump a file to .json for manual editing, or create a .level/.episode from .json.
     Will save a backup when trying to overwrite a file
