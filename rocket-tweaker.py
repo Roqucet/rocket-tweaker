@@ -2724,19 +2724,13 @@ file_classes = {
 
 def main():
     parser = argparse.ArgumentParser(
-        description="A tool for converting The Talos Principle: Reawakened `.level` & `.episode` files used in custom campaigns to and from JSON for easier editing. Lets you dump a file to .json for manual editing, or create a .level/.episode from .json. Will save a backup when trying to overwrite a file",
+        description="A tool for converting The Talos Principle: Reawakened & The Talos Principle 2 `.level` & `.episode` files used in custom campaigns to and from JSON for easier editing. Lets you dump a file to .json for manual editing, or create a .level/.episode from .json. Will save a backup when trying to overwrite a file",
     )
     parser.add_argument(
         "input_file",
-        help="/path/to/input. File extension determins conversion type - `.episode/.level` -> `.json` | `.json` -> `.level`",
+        help="/path/to/input. File extension determins conversion type - `.episode/.level` -> `.json` | `.json` -> `.episode/.level`",
     )
     parser.add_argument("-o", "--output", help="/path/to/output")
-    parser.add_argument(
-        "-e",
-        "--episode",
-        action="store_true",
-        help="If set, will use the `.episode` extenstion for output file",
-    )
 
     # .level & .episode files are largely handled by Unreal Engine, with each script/object having a `Serialize` function.
     # This results in a file format similar to unreal games saves (GVAS). Its possible those tool can read/edit .episode & .level files
@@ -2745,7 +2739,6 @@ def main():
     args = parser.parse_args()
     input_path = args.input_file
     output_path = args.output
-    use_episode_extension = args.episode
 
     # If a directory is targeted, default to converting the .episode file inside
     if os.path.isdir(input_path):
@@ -2757,10 +2750,12 @@ def main():
         if extension in ["level", "episode"]:
             # Episodes don't have a file name, only an extension (.episode)
             output_path = root + ".json"
-        elif use_episode_extension:
-            output_path = root + ".episode"
+        elif extension in ["json"]:
+            # Add the correct file extension later
+            output_path = root
         else:
-            output_path = root + ".level"
+            print(f'Unknown input file type: "{extension}"')
+            sys.exit(1)
 
     convert_type = "from_json" if input_path.endswith(".json") else "to_json"
 
@@ -2801,10 +2796,13 @@ def main():
 
         if "level_script" in file_data:
             file = Level.from_dict(file_data)
+            output_path += ".level"
         elif "episode_script" in file_data:
             file = Episode.from_dict(file_data)
+            output_path += ".episode"
         else:
             print("Unknown JSON file")
+            sys.exit(1)
 
         file.to_file(output_path)
     elif convert_type == "to_json":
