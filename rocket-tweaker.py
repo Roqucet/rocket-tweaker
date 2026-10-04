@@ -2768,8 +2768,21 @@ def main():
             print(f'Not a file: "{input_path}"')
             sys.exit(1)
 
-    # If reading from JSON, verify the JSON file exists
     if convert_type == "from_json":
+        # Load the json to determine the output file type
+        with open(input_path, "rb") as f:
+            file_data = json.loads(f.read())
+        if "level_script" in file_data:
+            file_class = file_classes["level"]
+            output_path += ".level"
+        elif "episode_script" in file_data:
+            file_class = file_classes["episode"]
+            output_path += ".episode"
+        else:
+            print("Unknown JSON file")
+            sys.exit(1)
+
+        # If reading from JSON, verify the JSON file exists
         if not os.path.exists(input_path):
             print(f'JSON file doesn\'t exist: "{input_path}"')
             sys.exit(1)
@@ -2790,20 +2803,7 @@ def main():
     print(f"Output: {output_path}")
 
     if convert_type == "from_json":
-        # Load the json to determine the output file type
-        with open(input_path, "rb") as f:
-            file_data = json.loads(f.read())
-
-        if "level_script" in file_data:
-            file = Level.from_dict(file_data)
-            output_path += ".level"
-        elif "episode_script" in file_data:
-            file = Episode.from_dict(file_data)
-            output_path += ".episode"
-        else:
-            print("Unknown JSON file")
-            sys.exit(1)
-
+        file = file_class.from_dict(file_data)
         file.to_file(output_path)
     elif convert_type == "to_json":
         # If converting to json (output is .json), take the input_path extension
