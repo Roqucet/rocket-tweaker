@@ -295,11 +295,11 @@ class ArrayProperty(BaseObject):
         if include_type_header != 0:
             if element_type == "EnumProperty":
                 # We can call parse_separate_header since we know the type
-                header_data = EnumProperty.parse_separate_header(reader)
+                header_data = EnumProperty.parse_separate_header(reader, decode_context)
             elif element_type == "StructProperty":
                 # We can call parse_separate_header since we know the type
                 header_data = StructProperty.parse_separate_header(
-                    reader, magic=include_type_header
+                    reader, decode_context, magic=include_type_header
                 )
             else:
                 raise NotImplementedError(
@@ -348,6 +348,7 @@ class ArrayProperty(BaseObject):
         reader.read_data(1)  # Unknown
         length = reader.read_u32()  # Don't save length as we always recalculate
 
+        header_data = None
         elements = []
         if element_type == "ByteProperty":  # Hacky ByteProperty fix
             # The ByteProperty type is weird and actually reads strings when part of enums
@@ -359,10 +360,12 @@ class ArrayProperty(BaseObject):
                 raise NotImplementedError(
                     f'Untested array element type "{element_type}"'
                 )
-            header_data = None
-            if element_type == "StructProperty":
-                # dummy header for array of structs which expect header data
-                header_data = {"struct_name": ""}
+
+            if element_class == StructProperty:
+                # We can call parse_separate_header since we know the type
+                header_data = StructProperty.parse_separate_header(
+                    reader, decode_context, magic=None
+                )
             for _ in range(length):
                 elements.append(
                     element_class.parse(
@@ -377,7 +380,7 @@ class ArrayProperty(BaseObject):
                 f'Unimplemented array property type!: "{element_type}"'
             )
 
-        return cls(non_zero_unknown, element_type, None, None, elements)
+        return cls(non_zero_unknown, element_type, None, header_data, elements)
 
     @classmethod
     def parse(cls, reader, decode_context):
@@ -445,12 +448,17 @@ class ArrayProperty(BaseObject):
         if self.include_type_header != 0:
             assert self.header_data  # Make sure header data exists
             if self.element_type == "EnumProperty":
-                # We can call parse_separate_header since we know the type
-                EnumProperty.unparse_separate_header(writer, self.header_data)
+                # We can call unparse_separate_header since we know the type
+                EnumProperty.upnarse_separate_header(
+                    writer, decode_context, self.header_data
+                )
             elif self.element_type == "StructProperty":
-                # We can call parse_separate_header since we know the type
+                # We can call unparse_separate_header since we know the type
                 StructProperty.unparse_separate_header(
-                    writer, magic=self.include_type_header, header_data=self.header_data
+                    writer,
+                    decode_context,
+                    magic=self.include_type_header,
+                    header_data=self.header_data,
                 )
             else:
                 raise NotImplementedError(
@@ -468,12 +476,12 @@ class ArrayProperty(BaseObject):
         if self.element_type == "ByteProperty":  # Hacky ByteProperty fix
             writer.write_data(self.elements[0].data)
         elif self.element_type in property_string_to_class:
+            element_class = property_string_to_class[self.element_type]
+            if not element_class in TESTED_ARRAY_CLASSES:
+                raise NotImplementedError(
+                    f'Untested array element type "{self.element_type}"'
+                )
             for element in self.elements:
-                element_class = property_string_to_class[self.element_type]
-                if not element_class in TESTED_ARRAY_CLASSES:
-                    raise NotImplementedError(
-                        f'Untested array element type "{self.element_type}"'
-                    )
                 element.unparse(
                     writer,
                     decode_context,
@@ -510,12 +518,20 @@ class ArrayProperty(BaseObject):
         if self.element_type == "ByteProperty":  # Hacky ByteProperty fix
             writer.write_data(self.elements[0].data)
         elif self.element_type in property_string_to_class:
+            element_class = property_string_to_class[self.element_type]
+            if not element_class in TESTED_ARRAY_CLASSES:
+                raise NotImplementedError(
+                    f'Untested array element type "{self.element_type}"'
+                )
+            if element_class == StructProperty:
+                # We can call unparse_separate_header since we know the type
+                StructProperty.unparse_separate_header(
+                    writer,
+                    decode_context,
+                    magic=None,
+                    header_data=self.header_data,
+                )
             for element in self.elements:
-                element_class = property_string_to_class[self.element_type]
-                if not element_class in TESTED_ARRAY_CLASSES:
-                    raise NotImplementedError(
-                        f'Untested array element type "{self.element_type}"'
-                    )
                 element.unparse(
                     writer,
                     decode_context,
@@ -606,7 +622,7 @@ class BoolProperty(BaseObject):
             self.header.unparse(writer, decode_context, 0, optional_guid=False)
         writer.write_u8(self.bool_)
         if include_header:
-            writer.write_u8(0)  # Random extra byte TODO: Maybe save
+            writer.write_u8(0)  # Random extra byte TODO: Maybe saveq
 
     def unparse(self, writer, decode_context, include_header=True, header_data=None):
         if decode_context.game_version == GameVersion.Reawakened:
@@ -797,14 +813,18 @@ class EnumProperty(BaseObject):
 
     @classmethod
     def _parseT2(cls, reader, include_header=True, header_data=None):
-        reader.read_u32()  # Byte count - Ignore as we always recalculate
-        non_zero_unknown1 = reader.read_data(4).decode(
-            encoding="unicode_escape"
-        )  # Unknown
-        string1 = reader.read_string()
-        non_zero_unknown2 = reader.read_data(1).decode(
-            encoding="unicode_escape"
-        )  # Unknown
+        non_zero_unknown1 = None
+        string1 = None
+        non_zero_unknown2 = None
+        if include_header:
+            reader.read_u32()  # Byte count - Ignore as we always recalculate
+            non_zero_unknown1 = reader.read_data(4).decode(
+                encoding="unicode_escape"
+            )  # Unknown
+            string1 = reader.read_string()
+            non_zero_unknown2 = reader.read_data(1).decode(
+                encoding="unicode_escape"
+            )  # Unknown
         string2 = reader.read_string()
         return cls(non_zero_unknown1, string1, non_zero_unknown2, string2, None, None)
 
@@ -817,7 +837,7 @@ class EnumProperty(BaseObject):
         else:
             raise NotImplementedError("Unknown game version")
 
-    def parse_separate_header(reader):
+    def _parse_separate_headerR(reader, decode_context):
         string1 = reader.read_string()
         non_zero_unknown2 = reader.read_data(4).decode(
             encoding="unicode_escape"
@@ -832,6 +852,12 @@ class EnumProperty(BaseObject):
             "string2": string2,
             "enum_type": enum_type,
         }
+
+    def parse_separate_header(reader, decode_context):
+        if decode_context.game_version == GameVersion.Reawakened:
+            return EnumProperty._parse_separate_headerR(reader, decode_context)
+        else:
+            raise NotImplementedError("Unknown game version")
 
     def to_dict(self):
         ret = {}
@@ -878,23 +904,25 @@ class EnumProperty(BaseObject):
             )
 
     def _unparseT2(self, writer, include_header=True, header_data=None):
-        # Calculate bytes dynamically
-        byte_count_pos = writer.stream.tell()
-        writer.write_u32(0x41414141)
+        if include_header:
+            # Calculate bytes dynamically
+            byte_count_pos = writer.stream.tell()
+            writer.write_u32(0x41414141)
 
-        writer.write_data(self.unknown.encode())
-        writer.write_string(self.string1)
-        writer.write_data(self.unknown2.encode())
+            writer.write_data(self.unknown.encode())
+            writer.write_string(self.string1)
+            writer.write_data(self.unknown2.encode())
 
-        byte_count_start = writer.stream.tell()
+            byte_count_start = writer.stream.tell()
         writer.write_string(self.string2)
 
-        # Fix for unknown data length
-        current_pos = writer.stream.tell()
-        writer.stream.seek(byte_count_pos, os.SEEK_SET)
-        byte_count = current_pos - byte_count_start
-        writer.write_u32(byte_count)
-        writer.stream.seek(current_pos, os.SEEK_SET)
+        if include_header:
+            # Fix for unknown data length
+            current_pos = writer.stream.tell()
+            writer.stream.seek(byte_count_pos, os.SEEK_SET)
+            byte_count = current_pos - byte_count_start
+            writer.write_u32(byte_count)
+            writer.stream.seek(current_pos, os.SEEK_SET)
 
     def unparse(self, writer, decode_context, include_header=True, header_data=None):
         if decode_context.game_version == GameVersion.Reawakened:
@@ -904,7 +932,7 @@ class EnumProperty(BaseObject):
         else:
             raise NotImplementedError("Unknown game version")
 
-    def unparse_separate_header(writer, header_data):
+    def _unparse_separate_headerR(writer, decode_context, header_data):
         string1 = header_data["string1"]
         non_zero_unknown2 = header_data["non_zero_unknown2"]
         string2 = header_data["string2"]
@@ -917,6 +945,14 @@ class EnumProperty(BaseObject):
 
         writer.write_string(enum_type)
         writer.write_data(b"\x00" * 4)
+
+    def unparse_separate_header(writer, decode_context, header_data):
+        if decode_context.game_version == GameVersion.Reawakened:
+            return EnumProperty._unparse_separate_headerR(
+                writer, decode_context, header_data
+            )
+        else:
+            raise NotImplementedError("Unknown game version")
 
 
 class FloatProperty(BaseObject):
@@ -1020,7 +1056,7 @@ class MapProperty(BaseObject):
             if key_type == "StructProperty":
                 # We can call parse_separate_header since we know the type
                 key_header_data = StructProperty.parse_separate_header(
-                    reader, magic=include_key_header
+                    reader, decode_context, magic=include_key_header
                 )
             else:
                 raise NotImplementedError(
@@ -1034,7 +1070,7 @@ class MapProperty(BaseObject):
             if value_type == "StructProperty":
                 # We can call parse_separate_header since we know the type
                 value_header_data = StructProperty.parse_separate_header(
-                    reader, magic=include_value_header
+                    reader, decode_context, magic=include_value_header
                 )
             else:
                 raise NotImplementedError(
@@ -1255,6 +1291,7 @@ class MapProperty(BaseObject):
             if self.key_type == "StructProperty":
                 StructProperty.unparse_separate_header(
                     writer,
+                    decode_context,
                     magic=self.include_key_header,
                     header_data=self.key_header_data,
                 )
@@ -1269,6 +1306,7 @@ class MapProperty(BaseObject):
             if self.value_type == "StructProperty":
                 StructProperty.unparse_separate_header(
                     writer,
+                    decode_context,
                     magic=self.include_value_header,
                     header_data=self.value_header_data,
                 )
@@ -1943,10 +1981,7 @@ class StrProperty(BaseObject):
             self.header.unparse(writer, decode_context, byte_count)
             writer.stream.seek(current_pos, os.SEEK_SET)
 
-# TODO: Fix Talos 2 arrays of structs, to properly to remove the S_EditorTerminalDialog
-# My (limited) understanding of arrays of structs:
-# - First few bytes of the array data are a common struct header, which is shared between the array elements
-# - The "byte_count" in this header is the total number of bytes of all elements combined
+
 class StructProperty(BaseObject):
     def __init__(
         self,
@@ -2049,9 +2084,6 @@ class StructProperty(BaseObject):
     @classmethod
     def _parseT2(cls, reader, decode_context, include_header=True, header_data=None):
         if include_header:
-            # Hacky fix for the S_EditorTerminalDialog struct
-            byte_count = reader.read_u32()
-            reader.stream.seek(-4, os.SEEK_CUR)
             header = CommonHeader.parse(reader, decode_context, optional_guid=False)
             struct_name = reader.read_string()
             unknown = base64.b64encode(reader.read_data(0x11)).decode()
@@ -2076,11 +2108,6 @@ class StructProperty(BaseObject):
         elif struct_name == "LinearColor":
             colour = struct.unpack("<4f", reader.read_data(4 * 4))
             data = list(colour)
-        elif struct_name == "S_EditorTerminalDialog":
-            # This single struct has caused me a great deal of pain, skip over it.
-            # Hopefully no one wants to edit NPC/terminal dialog outside of the game
-            assert byte_count
-            data = base64.b64encode(reader.read_data(byte_count)).decode()
         else:  # Custom struct, not part of core Unreal Engine
             named_properties = []
             while True:
@@ -2089,10 +2116,6 @@ class StructProperty(BaseObject):
                     # Hack for None type having no extra bytes
                     reader.stream.seek(-4, os.SEEK_CUR)
                     break
-                if not include_header and prop.property_type == "StructProperty":
-                    # Don't know why, but an array of structs containing structs have 1 less "None" property
-                    # Hacky fix, go back 9 bytes
-                    reader.stream.seek(-9, os.SEEK_CUR)
                 named_properties.append(prop)
             data = named_properties
         return cls(
@@ -2108,7 +2131,7 @@ class StructProperty(BaseObject):
         else:
             raise NotImplementedError("Unknown game version")
 
-    def parse_separate_header(reader, magic):
+    def _parse_separate_headerR(reader, decode_context, magic):
         struct_name = reader.read_string()
         non_zero_unknown = reader.read_data(4).decode(
             encoding="unicode_escape"
@@ -2131,6 +2154,33 @@ class StructProperty(BaseObject):
             "magic_unknown": magic_unknown,
             "uuid": uuid,
         }
+
+    def _parse_separate_headerT2(reader, decode_context):
+        property_name = reader.read_string()  # Duplicate of the array property name
+        property_type = reader.read_string()  # Duplicate of the array element type??
+        byte_count = (
+            reader.read_u32()
+        )  # Byte count of all struct elements in an array combined
+        reader.read_data(
+            4
+        )  # Likely the strings thing found in common headers that go unused in Talos2
+        struct_name = reader.read_string()
+        unknown = base64.b64encode(reader.read_data(0x11)).decode()
+        return {
+            "property_name": property_name,
+            "property_type": property_type,
+            "byte_count": byte_count,
+            "struct_name": struct_name,
+            "unknown": unknown,
+        }
+
+    def parse_separate_header(reader, decode_context, magic):
+        if decode_context.game_version == GameVersion.Reawakened:
+            return StructProperty._parse_separate_headerR(reader, decode_context, magic)
+        if decode_context.game_version == GameVersion.Talos2:
+            return StructProperty._parse_separate_headerT2(reader, decode_context)
+        else:
+            raise NotImplementedError("Unknown game version")
 
     def to_dict(self):
         ret = {}
@@ -2156,7 +2206,6 @@ class StructProperty(BaseObject):
             "IntPoint",
             "Rotator",
             "LinearColor",
-            "S_EditorTerminalDialog",
         ]:
             ret.update({self.struct_name: self.data})
         else:  # Custom struct, not part of core Unreal Engine
@@ -2188,8 +2237,6 @@ class StructProperty(BaseObject):
             data = dictionary["Rotator"]
         elif struct_name == "LinearColor":
             data = dictionary["LinearColor"]
-        elif struct_name == "S_EditorTerminalDialog":
-            data = dictionary["S_EditorTerminalDialog"]
         else:  # Custom struct, not part of core Unreal Engine
             named_properties = []
             for name, data in dictionary["data"].items():
@@ -2284,18 +2331,9 @@ class StructProperty(BaseObject):
             writer.write_data(
                 struct.pack("<4f", colour[0], colour[1], colour[2], colour[3])
             )
-        elif self.struct_name == "S_EditorTerminalDialog":
-            # This single struct has caused me a great deal of pain, skip over it.
-            # Hopefully no one wants to edit NPC/terminal dialog outside of the game
-            writer.write_data(base64.b64decode(self.data))
         else:
             for prop in self.data:
                 prop.unparse(writer, decode_context)
-
-                if not include_header and prop.property_type == "StructProperty":
-                    # Don't know why, but an array of structs containing structs have 1 less "None" property
-                    # Hacky fix, go back 9 bytes
-                    writer.stream.seek(-9, os.SEEK_CUR)
             # Write the `None` property
             writer.write_string("None")
 
@@ -2315,7 +2353,7 @@ class StructProperty(BaseObject):
         else:
             raise NotImplementedError("Unknown game version")
 
-    def unparse_separate_header(writer, magic, header_data):
+    def _unparse_separate_headerR(writer, decode_context, magic, header_data):
         # Don't write magic as it's consumed by `ArrayProperty` when parsing
         struct_name = header_data["struct_name"]
         non_zero_unknown = header_data["non_zero_unknown"]
@@ -2333,6 +2371,33 @@ class StructProperty(BaseObject):
                 writer.write_data(b"\x00" * 4)
             writer.write_string(uuid)
         writer.write_data(b"\x00" * 4)
+
+    def _unparse_separate_headerT2(writer, decode_context, header_data):
+        property_name = header_data["property_name"]
+        property_type = header_data["property_type"]
+        byte_count = header_data["byte_count"]
+        struct_name = header_data["struct_name"]
+        unknown = header_data["unknown"]
+
+        writer.write_string(property_name)
+        writer.write_string(property_type)
+        writer.write_u32(byte_count)
+        writer.write_data(b"\x00" * 4)
+        writer.write_string(struct_name)
+
+        writer.write_data(base64.b64decode(unknown))
+
+    def unparse_separate_header(writer, decode_context, magic, header_data):
+        if decode_context.game_version == GameVersion.Reawakened:
+            return StructProperty._unparse_separate_headerR(
+                writer, decode_context, magic, header_data
+            )
+        elif decode_context.game_version == GameVersion.Talos2:
+            return StructProperty._unparse_separate_headerT2(
+                writer, decode_context, header_data
+            )
+        else:
+            raise NotImplementedError("Unknown game version")
 
 
 class TextProperty(BaseObject):
